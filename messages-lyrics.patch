@@ -1,0 +1,501 @@
+diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt
+--- Square-orig/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-22 16:21:43.075225943 +0000
++++ Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-22 16:21:43.107388845 +0000
+@@ -127,8 +127,11 @@
+         prefs.edit().putString(KEY_PREFERRED_LYRICS, value).apply()
+     }
+ 
+-    /** How the lyrics are drawn: animated word by word, or as plain lines. */
+-    enum class LyricsStyle { ANIMATED, CLASSIC }
++    /**
++     * How the lyrics are drawn: animated word by word, as plain lines, or as a
++     * chat that fills with message bubbles as the song is sung.
++     */
++    enum class LyricsStyle { ANIMATED, CLASSIC, MESSAGES }
+ 
+     private val _lyricsStyle = MutableStateFlow(
+         LyricsStyle.entries.firstOrNull { it.name == prefs.getString(KEY_LYRICS_STYLE, null) } ?: LyricsStyle.ANIMATED,
+diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-22 16:21:43.078652064 +0000
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-22 16:21:43.106929599 +0000
+@@ -151,7 +151,7 @@
+ }
+ 
+ /** Where each timed word sits in the line's text, found in order; null for one not found. */
+-private fun wordRanges(line: LyricLine): List<IntRange?> {
++internal fun wordRanges(line: LyricLine): List<IntRange?> {
+     var cursor = 0
+     return line.words.map { word ->
+         val at = line.text.indexOf(word.text, cursor)
+@@ -165,7 +165,7 @@
+ }
+ 
+ /** The line, coloured as far as it has been sung at [positionMs]. */
+-private fun sungSoFar(
++internal fun sungSoFar(
+     line: LyricLine,
+     ranges: List<IntRange?>,
+     positionMs: Long,
+diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-22 16:21:43.078794859 +0000
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-22 16:21:43.107710759 +0000
+@@ -232,8 +232,8 @@
+                     }
+                 }
+                 Heading(stringResource(R.string.lyrics_style_title), top = 10.dp)
+-                // Two side by side, on one line: a choice of two does not need
+-                // two rows, and the panel has to fit the lyrics' own space.
++                // Side by side, on one line: a choice of three short names does not need
++                // three rows, and the panel has to fit the lyrics' own space.
+                 Row(
+                     Modifier.padding(horizontal = 18.dp),
+                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+@@ -245,6 +245,7 @@
+                                 when (option) {
+                                     LyricsStyle.ANIMATED -> R.string.lyrics_style_animated
+                                     LyricsStyle.CLASSIC -> R.string.lyrics_style_classic
++                                    LyricsStyle.MESSAGES -> R.string.lyrics_style_messages
+                                 },
+                             ),
+                             style = MaterialTheme.typography.bodyMedium,
+diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-22 16:22:18.025583235 +0000
+@@ -0,0 +1,283 @@
++package dev.lelonio.square.ui.player
++
++import androidx.compose.animation.core.Animatable
++import androidx.compose.animation.core.LinearEasing
++import androidx.compose.animation.core.RepeatMode
++import androidx.compose.animation.core.Spring
++import androidx.compose.animation.core.animateFloat
++import androidx.compose.animation.core.animateFloatAsState
++import androidx.compose.animation.core.infiniteRepeatable
++import androidx.compose.animation.core.rememberInfiniteTransition
++import androidx.compose.animation.core.spring
++import androidx.compose.animation.core.tween
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.PaddingValues
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.widthIn
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.LazyListState
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.State
++import androidx.compose.runtime.derivedStateOf
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.remember
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.draw.drawWithContent
++import androidx.compose.ui.graphics.BlendMode
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.CompositingStrategy
++import androidx.compose.ui.graphics.TransformOrigin
++import androidx.compose.ui.graphics.graphicsLayer
++import androidx.compose.ui.platform.LocalLayoutDirection
++import androidx.compose.ui.text.AnnotatedString
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.LayoutDirection
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import dev.lelonio.square.data.LyricLine
++import dev.lelonio.square.data.Lyrics
++
++/** The blue of a sent message. */
++private val SentBlue = Color(0xFF0A84FF)
++
++/**
++ * The lyrics as a conversation.
++ *
++ * Nothing is shown ahead of the song: each line arrives as a new message
++ * bubble when it is reached, popping in from its corner, and the ones before
++ * it settle upward and quieten. Lines alternate between the two sides, the
++ * first from the left in the app's ink, the next from the right in blue. The
++ * line being sung takes the ink word by word where the source times its
++ * words, like [ClassicLyricsView]; an instrumental gap shows the three dots
++ * of someone typing.
++ *
++ * Lyrics that are not synced have no "now" to follow, so they are laid out
++ * whole, from the top, as a finished conversation. A bubble pressed seeks to
++ * its line, and the history can be scrolled back through while the song plays.
++ */
++@Composable
++fun MessagesLyricsView(
++    lyrics: Lyrics,
++    positionMs: State<Long>,
++    modifier: Modifier = Modifier,
++    showTranslation: Boolean = false,
++    onSeek: (Long) -> Unit,
++) {
++    val synced = lyrics.synced
++
++    // Read as a derived value, so only a change of line recomposes the list.
++    val activeLine by remember(lyrics) {
++        derivedStateOf {
++            if (!lyrics.synced) -1
++            else lyrics.lines.indexOfLast { (it.startTimeMs ?: 0L) <= positionMs.value }
++        }
++    }
++
++    // Which side each line speaks from. A blank line (a gap in the song)
++    // does not take a turn, so the conversation carries on from where it was.
++    val atEnd = remember(lyrics) {
++        var end = true
++        BooleanArray(lyrics.lines.size) { index ->
++            if (lyrics.lines[index].text.isNotBlank()) end = !end
++            end
++        }
++    }
++
++    val last = if (synced) activeLine else lyrics.lines.lastIndex
++
++    // The lines on screen. Synced: those reached so far, newest first, as the
++    // list is laid out from the bottom up like a chat. A blank line shows
++    // only while it is the current one, as the typing dots.
++    val indices = remember(lyrics, last) {
++        val reached = (0..last).filter { index ->
++            lyrics.lines[index].text.isNotBlank() || (synced && index == last)
++        }
++        if (synced) reached.asReversed() else reached
++    }
++
++    val listState = remember(lyrics) { LazyListState() }
++
++    // Back to the newest message when a new one arrives, unless the listener
++    // is reading further up.
++    LaunchedEffect(last) {
++        if (synced && !listState.isScrollInProgress) listState.animateScrollToItem(0)
++    }
++
++    LazyColumn(
++        state = listState,
++        reverseLayout = synced,
++        verticalArrangement = Arrangement.spacedBy(8.dp),
++        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 48.dp),
++        modifier = modifier
++            .fillMaxSize()
++            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
++            .drawWithContent {
++                drawContent()
++                drawRect(
++                    brush = Brush.verticalGradient(
++                        0f to Color.Transparent,
++                        0.12f to Color.Black,
++                        0.88f to Color.Black,
++                        1f to Color.Transparent,
++                    ),
++                    blendMode = BlendMode.DstIn,
++                )
++            },
++    ) {
++        items(indices, key = { it }) { index ->
++            val line = lyrics.lines[index]
++            MessageBubble(
++                line = line,
++                atEnd = atEnd[index],
++                newest = synced && index == activeLine,
++                synced = synced,
++                positionMs = positionMs,
++                showTranslation = showTranslation,
++                onClick = { line.startTimeMs?.let(onSeek) },
++            )
++        }
++    }
++}
++
++@Composable
++private fun MessageBubble(
++    line: LyricLine,
++    atEnd: Boolean,
++    newest: Boolean,
++    synced: Boolean,
++    positionMs: State<Long>,
++    showTranslation: Boolean,
++    onClick: () -> Unit,
++) {
++    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
++
++    // Pops in once, when it is the line just reached. A bubble that comes
++    // into view by scrolling, or after a seek, is simply there.
++    val pop = remember { Animatable(if (newest) 0f else 1f) }
++    LaunchedEffect(Unit) {
++        if (pop.value < 1f) {
++            pop.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessMedium))
++        }
++    }
++
++    // The line being sung in full, those already sent quieter. Without sync
++    // every line is the same.
++    val live = !synced || newest
++    val dim by animateFloatAsState(
++        targetValue = if (live) 1f else 0.55f,
++        animationSpec = tween(300),
++        label = "messageDim",
++    )
++
++    val ink = GlassInk
++    val sung = if (atEnd) Color.White else ink
++    val quiet = sung.copy(alpha = 0.5f)
++    val fill = if (atEnd) SentBlue else ink.copy(alpha = 0.16f)
++
++    val round = 20.dp
++    val corner = 5.dp
++    val shape = RoundedCornerShape(
++        topStart = round,
++        topEnd = round,
++        bottomStart = if (atEnd) round else corner,
++        bottomEnd = if (atEnd) corner else round,
++    )
++
++    Row(
++        Modifier.fillMaxWidth(),
++        horizontalArrangement = if (atEnd) Arrangement.End else Arrangement.Start,
++    ) {
++        Column(
++            Modifier
++                .widthIn(max = 300.dp)
++                .graphicsLayer {
++                    val p = pop.value
++                    alpha = p.coerceIn(0f, 1f) * dim
++                    val scale = 0.82f + 0.18f * p
++                    scaleX = scale
++                    scaleY = scale
++                    // Grows out of the corner its tail is on.
++                    transformOrigin = TransformOrigin(if (atEnd != rtl) 1f else 0f, 1f)
++                }
++                .clip(shape)
++                .background(fill)
++                .clickable(enabled = line.startTimeMs != null, onClick = onClick)
++                .padding(horizontal = 14.dp, vertical = 9.dp),
++        ) {
++            if (line.text.isBlank()) {
++                TypingDots(sung)
++            } else {
++                // Only the line being sung reads the position, so only it
++                // redraws as the song moves.
++                val timed = synced && newest && line.words.isNotEmpty()
++                val ranges = remember(line) { wordRanges(line) }
++                Text(
++                    if (timed) {
++                        sungSoFar(line, ranges, positionMs.value, sung, quiet)
++                    } else {
++                        AnnotatedString(line.text)
++                    },
++                    style = MaterialTheme.typography.bodyLarge.copy(
++                        fontSize = 18.sp,
++                        lineHeight = 24.sp,
++                        fontWeight = FontWeight.Medium,
++                    ),
++                    color = if (timed) quiet else sung,
++                )
++                val translation = line.translation.takeIf { showTranslation && !it.isNullOrBlank() }
++                if (translation != null) {
++                    Text(
++                        translation,
++                        style = MaterialTheme.typography.bodyMedium,
++                        color = sung.copy(alpha = 0.7f),
++                        modifier = Modifier.padding(top = 3.dp),
++                    )
++                }
++            }
++        }
++    }
++}
++
++/** The three dots of someone typing, for a gap in the song. */
++@Composable
++private fun TypingDots(color: Color) {
++    val transition = rememberInfiniteTransition(label = "typing")
++    Row(
++        horizontalArrangement = Arrangement.spacedBy(5.dp),
++        modifier = Modifier.padding(vertical = 6.dp),
++    ) {
++        repeat(3) { dot ->
++            val level by transition.animateFloat(
++                initialValue = 0.3f,
++                targetValue = 1f,
++                animationSpec = infiniteRepeatable(
++                    animation = tween(480, delayMillis = dot * 160, easing = LinearEasing),
++                    repeatMode = RepeatMode.Reverse,
++                ),
++                label = "typingDot$dot",
++            )
++            Box(
++                Modifier
++                    .size(8.dp)
++                    .graphicsLayer { alpha = level }
++                    .background(color, CircleShape),
++            )
++        }
++    }
++}
+diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-22 16:21:43.078870872 +0000
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-22 16:21:43.108859780 +0000
+@@ -3017,6 +3017,18 @@
+                 color = GlassInkDim,
+             )
+ 
++            style == dev.lelonio.square.data.PreferencesStore.LyricsStyle.MESSAGES -> CompositionLocalProvider(
++                LocalLayoutDirection provides songDirection,
++            ) {
++                MessagesLyricsView(
++                    lyrics = shown ?: lyrics,
++                    positionMs = heardMs,
++                    showTranslation = translated || romanized,
++                    onSeek = seekHeard,
++                    modifier = Modifier.fillMaxSize(),
++                )
++            }
++
+             style == dev.lelonio.square.data.PreferencesStore.LyricsStyle.CLASSIC -> CompositionLocalProvider(
+                 LocalLayoutDirection provides songDirection,
+             ) {
+diff -ruN Square-orig/app/src/main/res/values/strings.xml Square-master/app/src/main/res/values/strings.xml
+--- Square-orig/app/src/main/res/values/strings.xml	2026-11-22 16:21:43.080639921 +0000
++++ Square-master/app/src/main/res/values/strings.xml	2026-11-22 16:21:43.109913085 +0000
+@@ -657,6 +657,7 @@
+     <string name="lyrics_style_title">Style</string>
+     <string name="lyrics_style_animated">Animated</string>
+     <string name="lyrics_style_classic">Classic</string>
++    <string name="lyrics_style_messages">Messages</string>
+     <string name="lyrics_word">Word by word</string>
+     <string name="lyrics_line">By line</string>
+     <string name="lyrics_unsynced">Not synced</string>
+diff -ruN Square-orig/app/src/main/res/values-de/strings.xml Square-master/app/src/main/res/values-de/strings.xml
+--- Square-orig/app/src/main/res/values-de/strings.xml	2026-11-22 16:21:43.080231511 +0000
++++ Square-master/app/src/main/res/values-de/strings.xml	2026-11-22 16:21:43.110695561 +0000
+@@ -591,6 +591,7 @@
+     <string name="lyrics_style_title">Stil</string>
+     <string name="lyrics_style_animated">Animiert</string>
+     <string name="lyrics_style_classic">Klassisch</string>
++    <string name="lyrics_style_messages">Nachrichten</string>
+     <string name="lyrics_word">Wort für Wort</string>
+     <string name="lyrics_line">Zeilenweise</string>
+     <string name="lyrics_unsynced">Nicht synchron</string>
+diff -ruN Square-orig/app/src/main/res/values-es/strings.xml Square-master/app/src/main/res/values-es/strings.xml
+--- Square-orig/app/src/main/res/values-es/strings.xml	2026-11-22 16:21:43.080263165 +0000
++++ Square-master/app/src/main/res/values-es/strings.xml	2026-11-22 16:21:43.111430451 +0000
+@@ -597,6 +597,7 @@
+     <string name="lyrics_style_title">Estilo</string>
+     <string name="lyrics_style_animated">Animado</string>
+     <string name="lyrics_style_classic">Clásico</string>
++    <string name="lyrics_style_messages">Mensajes</string>
+     <string name="lyrics_word">Palabra por palabra</string>
+     <string name="lyrics_line">Por línea</string>
+     <string name="lyrics_unsynced">Sin sincronizar</string>
+diff -ruN Square-orig/app/src/main/res/values-fr/strings.xml Square-master/app/src/main/res/values-fr/strings.xml
+--- Square-orig/app/src/main/res/values-fr/strings.xml	2026-11-22 16:21:43.080299016 +0000
++++ Square-master/app/src/main/res/values-fr/strings.xml	2026-11-22 16:21:43.112120627 +0000
+@@ -591,6 +591,7 @@
+     <string name="lyrics_style_title">Style</string>
+     <string name="lyrics_style_animated">Animé</string>
+     <string name="lyrics_style_classic">Classique</string>
++    <string name="lyrics_style_messages">Messages</string>
+     <string name="lyrics_word">Mot à mot</string>
+     <string name="lyrics_line">Par ligne</string>
+     <string name="lyrics_unsynced">Non synchronisées</string>
+diff -ruN Square-orig/app/src/main/res/values-hi/strings.xml Square-master/app/src/main/res/values-hi/strings.xml
+--- Square-orig/app/src/main/res/values-hi/strings.xml	2026-11-22 16:21:43.080330459 +0000
++++ Square-master/app/src/main/res/values-hi/strings.xml	2026-11-22 16:21:43.112987672 +0000
+@@ -606,6 +606,7 @@
+     <string name="lyrics_style_title">शैली</string>
+     <string name="lyrics_style_animated">एनिमेटेड</string>
+     <string name="lyrics_style_classic">क्लासिक</string>
++    <string name="lyrics_style_messages">संदेश</string>
+     <string name="lyrics_word">शब्द-दर-शब्द</string>
+     <string name="lyrics_line">पंक्ति-दर-पंक्ति</string>
+     <string name="lyrics_unsynced">सिंक नहीं</string>
+diff -ruN Square-orig/app/src/main/res/values-it/strings.xml Square-master/app/src/main/res/values-it/strings.xml
+--- Square-orig/app/src/main/res/values-it/strings.xml	2026-11-22 16:21:43.080360465 +0000
++++ Square-master/app/src/main/res/values-it/strings.xml	2026-11-22 16:21:43.113713354 +0000
+@@ -630,6 +630,7 @@
+     <string name="lyrics_style_title">Stile</string>
+     <string name="lyrics_style_animated">Animato</string>
+     <string name="lyrics_style_classic">Classico</string>
++    <string name="lyrics_style_messages">Messaggi</string>
+     <string name="lyrics_word">Parola per parola</string>
+     <string name="lyrics_line">Per riga</string>
+     <string name="lyrics_unsynced">Non sincronizzato</string>
+diff -ruN Square-orig/app/src/main/res/values-ja/strings.xml Square-master/app/src/main/res/values-ja/strings.xml
+--- Square-orig/app/src/main/res/values-ja/strings.xml	2026-11-22 16:21:43.080394209 +0000
++++ Square-master/app/src/main/res/values-ja/strings.xml	2026-11-22 16:21:43.114519252 +0000
+@@ -647,6 +647,7 @@
+     <string name="lyrics_style_title">表示スタイル</string>
+     <string name="lyrics_style_animated">アニメーション</string>
+     <string name="lyrics_style_classic">クラシック</string>
++    <string name="lyrics_style_messages">メッセージ</string>
+     <string name="lyrics_word">単語単位で同期</string>
+     <string name="lyrics_line">行単位で同期</string>
+     <string name="lyrics_unsynced">未同期</string>
+diff -ruN Square-orig/app/src/main/res/values-ko/strings.xml Square-master/app/src/main/res/values-ko/strings.xml
+--- Square-orig/app/src/main/res/values-ko/strings.xml	2026-11-22 16:21:43.080425545 +0000
++++ Square-master/app/src/main/res/values-ko/strings.xml	2026-11-22 16:21:43.115309652 +0000
+@@ -615,6 +615,7 @@
+     <string name="lyrics_style_title">스타일</string>
+     <string name="lyrics_style_animated">애니메이션</string>
+     <string name="lyrics_style_classic">클래식</string>
++    <string name="lyrics_style_messages">메시지</string>
+     <string name="lyrics_word">단어별</string>
+     <string name="lyrics_line">줄별</string>
+     <string name="lyrics_unsynced">동기화되지 않음</string>
+diff -ruN Square-orig/app/src/main/res/values-pt/strings.xml Square-master/app/src/main/res/values-pt/strings.xml
+--- Square-orig/app/src/main/res/values-pt/strings.xml	2026-11-22 16:21:43.080458364 +0000
++++ Square-master/app/src/main/res/values-pt/strings.xml	2026-11-22 16:21:43.115873607 +0000
+@@ -591,6 +591,7 @@
+     <string name="lyrics_style_title">Estilo</string>
+     <string name="lyrics_style_animated">Animado</string>
+     <string name="lyrics_style_classic">Clássico</string>
++    <string name="lyrics_style_messages">Mensagens</string>
+     <string name="lyrics_word">Palavra por palavra</string>
+     <string name="lyrics_line">Por linha</string>
+     <string name="lyrics_unsynced">Não sincronizada</string>
+diff -ruN Square-orig/app/src/main/res/values-ru/strings.xml Square-master/app/src/main/res/values-ru/strings.xml
+--- Square-orig/app/src/main/res/values-ru/strings.xml	2026-11-22 16:21:43.080514161 +0000
++++ Square-master/app/src/main/res/values-ru/strings.xml	2026-11-22 16:21:43.116832760 +0000
+@@ -620,6 +620,7 @@
+     <string name="lyrics_style_title">Стиль</string>
+     <string name="lyrics_style_animated">Анимированный</string>
+     <string name="lyrics_style_classic">Классический</string>
++    <string name="lyrics_style_messages">Сообщения</string>
+     <string name="lyrics_word">По словам</string>
+     <string name="lyrics_line">По строкам</string>
+     <string name="lyrics_unsynced">Без синхронизации</string>
+diff -ruN Square-orig/app/src/main/res/values-tr/strings.xml Square-master/app/src/main/res/values-tr/strings.xml
+--- Square-orig/app/src/main/res/values-tr/strings.xml	2026-11-22 16:21:43.080560963 +0000
++++ Square-master/app/src/main/res/values-tr/strings.xml	2026-11-22 16:21:43.117533997 +0000
+@@ -604,6 +604,7 @@
+     <string name="lyrics_style_title">Stil</string>
+     <string name="lyrics_style_animated">Animasyonlu</string>
+     <string name="lyrics_style_classic">Klasik</string>
++    <string name="lyrics_style_messages">Mesajlar</string>
+     <string name="lyrics_word">Kelime kelime</string>
+     <string name="lyrics_line">Satır satır</string>
+     <string name="lyrics_unsynced">Senkronize değil</string>
+diff -ruN Square-orig/app/src/main/res/values-vi/strings.xml Square-master/app/src/main/res/values-vi/strings.xml
+--- Square-orig/app/src/main/res/values-vi/strings.xml	2026-11-22 16:21:43.080592411 +0000
++++ Square-master/app/src/main/res/values-vi/strings.xml	2026-11-22 16:21:43.118277318 +0000
+@@ -650,6 +650,7 @@
+     <string name="lyrics_style_title">Kiểu</string>
+     <string name="lyrics_style_animated">Động</string>
+     <string name="lyrics_style_classic">Cổ điển</string>
++    <string name="lyrics_style_messages">Tin nhắn</string>
+     <string name="lyrics_word">Theo từng từ</string>
+     <string name="lyrics_line">Theo từng dòng</string>
+     <string name="lyrics_unsynced">Chưa đồng bộ</string>
