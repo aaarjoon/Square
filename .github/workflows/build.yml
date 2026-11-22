@@ -23,8 +23,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - name: Apply lyrics patch
-         run: patch -p1 < messages-lyrics.patch
+       - name: Apply lyrics patch
+       run: |
+         patch -p1 -i messages-lyrics.patch
 
       - uses: ./.github/actions/setup
 
