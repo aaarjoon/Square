@@ -60,8 +60,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptio
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 12:04:54.652940455 +0000
-@@ -0,0 +1,634 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 12:27:13.551914148 +0000
+@@ -0,0 +1,683 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -102,7 +102,9 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.runtime.State
 +import androidx.compose.runtime.derivedStateOf
 +import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
 +import androidx.compose.runtime.remember
++import androidx.compose.runtime.withFrameNanos
 +import androidx.compose.ui.Alignment
 +import androidx.compose.ui.Modifier
 +import androidx.compose.ui.draw.clip
@@ -131,6 +133,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.ui.unit.sp
 +import dev.lelonio.square.data.LyricLine
 +import dev.lelonio.square.data.Lyrics
++import kotlin.math.abs
 +
 +/** The blue of a sent message. */
 +private val SentBlue = Color(0xFF0A84FF)
@@ -372,48 +375,54 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +}
 +
 +/**
-+ * What is needed to draw the words of one line, worked out once per line and
-+ * not once per frame: each word measured on its own, regular and bold, and the
-+ * box it occupies in the line. Everything here depends only on the text, so
-+ * the song moving on costs a few draw calls and no text layout at all.
++ * What is needed to draw the words of one line: the box each word occupies in
++ * the line, found once, and each word measured on its own the first time it
++ * is drawn, regular or bold, and kept. Measuring as the words come, rather
++ * than all of them when the line starts, keeps the start of a line from
++ * stalling a frame. Nothing here changes while the song moves on, so a frame
++ * costs a few draw calls and no text layout.
 + */
 +private class LineDrawing {
 +    var layout: TextLayoutResult? = null
-+    var normal: List<TextLayoutResult> = emptyList()
-+    var bold: List<TextLayoutResult> = emptyList()
 +    var boxes: List<Rect> = emptyList()
++    private var words: List<AnnotatedString> = emptyList()
++    private var regular: Array<TextLayoutResult?> = emptyArray()
++    private var heavy: Array<TextLayoutResult?> = emptyArray()
++    private var style: TextStyle = TextStyle.Default
++    private var boldStyle: TextStyle = TextStyle.Default
 +
-+    fun build(
-+        layout: TextLayoutResult,
-+        line: LyricLine,
-+        reveal: Reveal,
-+        style: TextStyle,
-+        measurer: TextMeasurer,
-+    ) {
-+        val normalWords = ArrayList<TextLayoutResult>(reveal.ranges.size)
-+        val boldWords = ArrayList<TextLayoutResult>(reveal.ranges.size)
++    fun build(layout: TextLayoutResult, line: LyricLine, reveal: Reveal, style: TextStyle) {
++        val wordTexts = ArrayList<AnnotatedString>(reveal.ranges.size)
 +        val wordBoxes = ArrayList<Rect>(reveal.ranges.size)
-+        val boldStyle = style.copy(fontWeight = FontWeight.Bold)
 +        for (range in reveal.ranges) {
 +            val fits = range.first >= 0 &&
 +                range.last < line.text.length &&
 +                range.last < layout.layoutInput.text.length
-+            val word = if (fits) {
-+                AnnotatedString(line.text.substring(range.first, range.last + 1))
-+            } else {
-+                AnnotatedString("")
-+            }
++            wordTexts.add(
++                if (fits) {
++                    AnnotatedString(line.text.substring(range.first, range.last + 1))
++                } else {
++                    AnnotatedString("")
++                },
++            )
 +            val first = if (fits) layout.getBoundingBox(range.first) else Rect.Zero
 +            val end = if (fits) layout.getBoundingBox(range.last) else Rect.Zero
 +            wordBoxes.add(Rect(first.left, first.top, end.right, first.bottom))
-+            normalWords.add(measurer.measure(word, style))
-+            boldWords.add(measurer.measure(word, boldStyle))
 +        }
-+        normal = normalWords
-+        bold = boldWords
++        words = wordTexts
 +        boxes = wordBoxes
++        regular = arrayOfNulls(wordTexts.size)
++        heavy = arrayOfNulls(wordTexts.size)
++        this.style = style
++        this.boldStyle = style.copy(fontWeight = FontWeight.Bold)
 +        this.layout = layout
 +    }
++
++    fun regularAt(i: Int, measurer: TextMeasurer): TextLayoutResult =
++        regular[i] ?: measurer.measure(words[i], style).also { regular[i] = it }
++
++    fun boldAt(i: Int, measurer: TextMeasurer): TextLayoutResult =
++        heavy[i] ?: measurer.measure(words[i], boldStyle).also { heavy[i] = it }
 +}
 +
 +/**
@@ -428,13 +437,14 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    reveal: Reveal,
 +    positionMs: Long,
 +    color: Color,
++    measurer: TextMeasurer,
 +) {
 +    for (i in reveal.starts.indices) {
 +        val t = positionMs - reveal.starts[i]
 +        if (t < 0) continue
 +        val box = drawing.boxes[i]
 +        if (popping(reveal, i, positionMs)) {
-+            val word = drawing.bold[i]
++            val word = drawing.boldAt(i, measurer)
 +            val center = box.center
 +            val fade = (t.toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
 +            val grow = popScale(reveal, i, positionMs)
@@ -449,9 +459,47 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                )
 +            }
 +        } else {
-+            drawText(drawing.normal[i], color = color, topLeft = Offset(box.left, box.top))
++            drawText(drawing.regularAt(i, measurer), color = color, topLeft = Offset(box.left, box.top))
 +        }
 +    }
++}
++
++/**
++ * A clock for animating words that runs on the screen's own frames.
++ *
++ * The song's position is only reported every so often, and an animation
++ * driven straight from it moves in steps of that size however fast the screen
++ * refreshes. This one carries on from the last report frame by frame, so the
++ * words move smoothly, and follows the reports so it never drifts: a report
++ * well away from where it expected (a seek) is taken as it is, and it never
++ * runs more than a third of a second ahead of the last report, so a paused
++ * song does not keep animating.
++ */
++@Composable
++private fun rememberSmoothPosition(positionMs: State<Long>, running: Boolean): State<Long> {
++    // Starts empty and is filled from the effect below: reading the position
++    // here, while composing, would recompose the bubble on every report.
++    val smooth = remember { mutableStateOf(0L) }
++    LaunchedEffect(running) {
++        if (!running) return@LaunchedEffect
++        var anchor = positionMs.value
++        var anchorAt = withFrameNanos { it }
++        smooth.value = anchor
++        while (true) {
++            withFrameNanos { now ->
++                val reported = positionMs.value
++                if (reported != anchor) {
++                    val expected = anchor + (now - anchorAt) / 1_000_000L
++                    anchor = reported
++                    anchorAt = now
++                    if (abs(reported - expected) > 600L) smooth.value = reported
++                }
++                val ahead = ((now - anchorAt) / 1_000_000L).coerceAtMost(300L)
++                smooth.value = maxOf(smooth.value, anchor + ahead)
++            }
++        }
++    }
++    return smooth
 +}
 +
 +@Composable
@@ -555,6 +603,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                        if (timed) revealOf(line, endMs) else null
 +                    }
 +                    val drawing = remember { LineDrawing() }
++                    val clock = rememberSmoothPosition(positionMs, timed)
 +                    // Where the words of the line ended up. Not state: nothing
 +                    // should recompose when it is set.
 +                    val layoutHolder = remember { arrayOfNulls<TextLayoutResult>(1) }
@@ -578,9 +627,9 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                                val layout = layoutHolder[0]
 +                                if (layout != null) {
 +                                    if (drawing.layout !== layout) {
-+                                        drawing.build(layout, line, reveal, textStyle, measurer)
++                                        drawing.build(layout, line, reveal, textStyle)
 +                                    }
-+                                    drawSungWords(drawing, reveal, positionMs.value, sung)
++                                    drawSungWords(drawing, reveal, clock.value, sung, measurer)
 +                                }
 +                            }
 +                        } else {
