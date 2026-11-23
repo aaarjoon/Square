@@ -60,8 +60,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptio
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 02:00:35.157681922 +0000
-@@ -0,0 +1,474 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 02:46:00.441831360 +0000
+@@ -0,0 +1,594 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -76,6 +76,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.animation.core.tween
 +import androidx.compose.foundation.Canvas
 +import androidx.compose.foundation.background
++import androidx.compose.foundation.border
 +import androidx.compose.foundation.clickable
 +import androidx.compose.foundation.layout.Arrangement
 +import androidx.compose.foundation.layout.Box
@@ -113,11 +114,18 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.ui.graphics.Color
 +import androidx.compose.ui.graphics.CompositingStrategy
 +import androidx.compose.ui.graphics.TransformOrigin
++import androidx.compose.ui.graphics.drawscope.DrawScope
++import androidx.compose.ui.graphics.drawscope.withTransform
 +import androidx.compose.ui.graphics.graphicsLayer
 +import androidx.compose.ui.platform.LocalLayoutDirection
 +import androidx.compose.ui.text.AnnotatedString
 +import androidx.compose.ui.text.SpanStyle
++import androidx.compose.ui.text.TextLayoutResult
++import androidx.compose.ui.text.TextMeasurer
++import androidx.compose.ui.text.TextStyle
 +import androidx.compose.ui.text.buildAnnotatedString
++import androidx.compose.ui.text.drawText
++import androidx.compose.ui.text.rememberTextMeasurer
 +import androidx.compose.ui.text.font.FontWeight
 +import androidx.compose.ui.unit.LayoutDirection
 +import androidx.compose.ui.unit.dp
@@ -130,6 +138,12 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +
 +/** How long a word takes to come in once it is sung. */
 +private const val WORD_FADE_MS = 140L
++
++/** How long a word takes to shrink back to size once it has been sung. */
++private const val SETTLE_MS = 220L
++
++/** How much bigger than the rest of the line a word is while it is sung. */
++private const val POP = 0.30f
 +
 +/**
 + * The lyrics as a conversation.
@@ -235,6 +249,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                grouped = grouped,
 +                place = places[index],
 +                newest = synced && index == activeLine,
++                age = if (synced) activeLine - index else 0,
 +                synced = synced,
 +                positionMs = positionMs,
 +                showTranslation = showTranslation,
@@ -281,8 +296,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    return ChatLayout(atEnd, next)
 +}
 +
-+/** When each word of a line is sung, and where it sits in the line's text. */
-+private class Reveal(val starts: LongArray, val ranges: List<IntRange>)
++/** When each word of a line is sung and stops being sung, and where it sits in the line's text. */
++private class Reveal(val starts: LongArray, val ends: LongArray, val ranges: List<IntRange>)
 +
 +/**
 + * The words of [line] with the moment each is sung: the source's own timing
@@ -294,6 +309,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    if (line.words.isNotEmpty() && found.none { it == null }) {
 +        return Reveal(
 +            LongArray(line.words.size) { line.words[it].startMs },
++            LongArray(line.words.size) { line.words[it].endMs },
 +            found.map { it!! },
 +        )
 +    }
@@ -308,25 +324,98 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +        used += spans[i].last - spans[i].first + 2
 +        at
 +    }
-+    return Reveal(starts, spans)
++    // A word lasts until the next one starts; the last one to the end of the song's share.
++    val ends = LongArray(spans.size) { i ->
++        if (i < spans.lastIndex) starts[i + 1] else start + singing
++    }
++    return Reveal(starts, ends, spans)
++}
++
++/** How long word [i] stays enlarged: as long as it is sung, within reason. */
++private fun holdMs(reveal: Reveal, i: Int): Long =
++    (reveal.ends[i] - reveal.starts[i]).coerceIn(250L, 900L)
++
++/** Whether word [i] is in its pop: coming in, held big, or settling back. */
++private fun popping(reveal: Reveal, i: Int, positionMs: Long): Boolean =
++    positionMs >= reveal.starts[i] &&
++        positionMs < reveal.starts[i] + holdMs(reveal, i) + SETTLE_MS
++
++/**
++ * How big word [i] is: it jumps up as it is sung, overshooting a little and
++ * settling, stays big while it is sung, then eases back to the size of the rest.
++ */
++private fun popScale(reveal: Reveal, i: Int, positionMs: Long): Float {
++    val t = positionMs - reveal.starts[i]
++    val hold = holdMs(reveal, i)
++    val rise = 120f
++    return when {
++        t < 0 -> 1f
++        t < rise -> {
++            val x = t / rise - 1f
++            1f + POP * (1f + 2.70158f * x * x * x + 1.70158f * x * x)
++        }
++        t < hold -> 1f + POP
++        else -> {
++            val x = ((t - hold).toFloat() / SETTLE_MS).coerceIn(0f, 1f)
++            1f + POP * (1f - x * x * (3f - 2f * x))
++        }
++    }
 +}
 +
 +/**
-+ * The line with each word as far in as it has come by [positionMs]. Words not
-+ * yet sung are there but see-through, so the bubble keeps the size it will
-+ * end up, and nothing moves as the words arrive.
++ * The line as it stands at [positionMs]: words already sung in place, words
++ * not yet sung there but see-through, so the bubble keeps the size it will end
++ * up and nothing moves. A word in its pop is also see-through here, because it
++ * is drawn bigger on top by [drawPoppingWords].
 + */
 +private fun revealed(line: LyricLine, reveal: Reveal, positionMs: Long, color: Color): AnnotatedString {
-+    val done = reveal.starts.isEmpty() || positionMs - reveal.starts.last() >= WORD_FADE_MS
++    val done = reveal.starts.isEmpty() ||
++        positionMs >= reveal.starts.last() + holdMs(reveal, reveal.starts.lastIndex) + SETTLE_MS
 +    return buildAnnotatedString {
 +        append(line.text)
 +        addStyle(SpanStyle(color = if (done) color else Color.Transparent), 0, line.text.length)
 +        if (done) return@buildAnnotatedString
 +        for (i in reveal.starts.indices) {
-+            val fade = ((positionMs - reveal.starts[i]).toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
-+            if (fade <= 0f) continue
++            if (positionMs < reveal.starts[i] || popping(reveal, i, positionMs)) continue
 +            val range = reveal.ranges[i]
-+            addStyle(SpanStyle(color = color.copy(alpha = fade)), range.first, range.last + 1)
++            addStyle(SpanStyle(color = color), range.first, range.last + 1)
++        }
++    }
++}
++
++/**
++ * Draws each word that is in its pop, bold and scaled up about its own
++ * centre, over the line. It is a drawing, not part of the text, so it does not
++ * push the words beside it: it grows over them, as in the video.
++ */
++private fun DrawScope.drawPoppingWords(
++    layout: TextLayoutResult?,
++    line: LyricLine,
++    reveal: Reveal,
++    positionMs: Long,
++    color: Color,
++    style: TextStyle,
++    measurer: TextMeasurer,
++) {
++    if (layout == null) return
++    for (i in reveal.starts.indices) {
++        if (!popping(reveal, i, positionMs)) continue
++        val range = reveal.ranges[i]
++        if (range.last >= line.text.length || range.last >= layout.layoutInput.text.length) continue
++        val first = layout.getBoundingBox(range.first)
++        val end = layout.getBoundingBox(range.last)
++        val center = Offset((first.left + end.right) / 2f, (first.top + first.bottom) / 2f)
++        val word = measurer.measure(
++            AnnotatedString(line.text.substring(range.first, range.last + 1)),
++            style.copy(fontWeight = FontWeight.Bold),
++        )
++        val fade = ((positionMs - reveal.starts[i]).toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
++        withTransform({ scale(popScale(reveal, i, positionMs), pivot = center) }) {
++            drawText(
++                word,
++                color = color.copy(alpha = fade),
++                topLeft = Offset(center.x - word.size.width / 2f, center.y - word.size.height / 2f),
++            )
 +        }
 +    }
 +}
@@ -339,6 +428,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    grouped: Boolean,
 +    place: String?,
 +    newest: Boolean,
++    age: Int,
 +    synced: Boolean,
 +    positionMs: State<Long>,
 +    showTranslation: Boolean,
@@ -351,17 +441,26 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    val pop = remember { Animatable(if (newest) 0f else 1f) }
 +    LaunchedEffect(Unit) {
 +        if (pop.value < 1f) {
-+            pop.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessMedium))
++            pop.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMediumLow))
 +        }
 +    }
 +
-+    // The line being sung in full, those already sent quieter. Without sync
-+    // every line is the same.
-+    val live = !synced || newest
++    // The line being sung in full, the one before it a little quieter, and
++    // the older ones quieter still. Without sync every line is the same.
 +    val dim by animateFloatAsState(
-+        targetValue = if (live) 1f else 0.55f,
++        targetValue = when {
++            !synced || age <= 0 -> 1f
++            age == 1 -> 0.62f
++            else -> 0.42f
++        },
 +        animationSpec = tween(300),
 +        label = "messageDim",
++    )
++    // A thin outline on the line being sung.
++    val ring by animateFloatAsState(
++        targetValue = if (newest) 1f else 0f,
++        animationSpec = tween(250),
++        label = "messageRing",
 +    )
 +
 +    val ink = GlassInk
@@ -395,14 +494,17 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                .graphicsLayer {
 +                    val p = pop.value
 +                    alpha = p.coerceIn(0f, 1f) * dim
-+                    val scale = 0.82f + 0.18f * p
++                    val scale = 0.7f + 0.3f * p
 +                    scaleX = scale
 +                    scaleY = scale
++                    // Rises into place from below, and bounces past it.
++                    translationY = (1f - p) * 24.dp.toPx()
 +                    // Grows out of the corner its tail is on.
 +                    transformOrigin = TransformOrigin(if (atEnd != rtl) 1f else 0f, 1f)
 +                }
 +                .clip(shape)
 +                .background(fill)
++                .border(1.dp, sung.copy(alpha = 0.4f * ring), shape)
 +                .clickable(enabled = line.startTimeMs != null, onClick = onClick),
 +        ) {
 +            if (card) MapHeader(place!!)
@@ -414,18 +516,36 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                    // redraws as the song moves.
 +                    val timed = synced && newest
 +                    val reveal = remember(line, endMs) { revealOf(line, endMs) }
++                    val measurer = rememberTextMeasurer()
++                    // Where the words of the line ended up, for drawing the
++                    // popping ones over them. Not state: nothing should
++                    // recompose when it is set.
++                    val layoutHolder = remember { arrayOfNulls<TextLayoutResult>(1) }
++                    val textStyle = MaterialTheme.typography.bodyLarge.copy(
++                        fontSize = 18.sp,
++                        lineHeight = 24.sp,
++                        fontWeight = FontWeight.Medium,
++                    )
 +                    Text(
 +                        if (timed) {
 +                            revealed(line, reveal, positionMs.value, sung)
 +                        } else {
 +                            AnnotatedString(line.text)
 +                        },
-+                        style = MaterialTheme.typography.bodyLarge.copy(
-+                            fontSize = 18.sp,
-+                            lineHeight = 24.sp,
-+                            fontWeight = FontWeight.Medium,
-+                        ),
++                        style = textStyle,
 +                        color = sung,
++                        onTextLayout = { layoutHolder[0] = it },
++                        modifier = if (timed) {
++                            Modifier.drawWithContent {
++                                drawContent()
++                                drawPoppingWords(
++                                    layoutHolder[0], line, reveal, positionMs.value,
++                                    sung, textStyle, measurer,
++                                )
++                            }
++                        } else {
++                            Modifier
++                        },
 +                    )
 +                    if (card) {
 +                        Row(
