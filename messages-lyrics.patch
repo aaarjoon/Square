@@ -60,8 +60,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptio
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 02:58:56.591540213 +0000
-@@ -0,0 +1,595 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 12:04:54.652940455 +0000
+@@ -0,0 +1,634 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -108,6 +108,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.ui.draw.clip
 +import androidx.compose.ui.draw.drawWithContent
 +import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Rect
 +import androidx.compose.ui.geometry.Size
 +import androidx.compose.ui.graphics.BlendMode
 +import androidx.compose.ui.graphics.Brush
@@ -119,11 +120,9 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +import androidx.compose.ui.graphics.graphicsLayer
 +import androidx.compose.ui.platform.LocalLayoutDirection
 +import androidx.compose.ui.text.AnnotatedString
-+import androidx.compose.ui.text.SpanStyle
 +import androidx.compose.ui.text.TextLayoutResult
 +import androidx.compose.ui.text.TextMeasurer
 +import androidx.compose.ui.text.TextStyle
-+import androidx.compose.ui.text.buildAnnotatedString
 +import androidx.compose.ui.text.drawText
 +import androidx.compose.ui.text.rememberTextMeasurer
 +import androidx.compose.ui.text.font.FontWeight
@@ -184,6 +183,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    }
 +
 +    val chat = remember(lyrics) { chatLayout(lyrics.lines) }
++    val measurer = rememberTextMeasurer()
 +
 +    // A place gets its card the first time the song sings about it, not on
 +    // every mention.
@@ -217,7 +217,9 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    LazyColumn(
 +        state = listState,
 +        reverseLayout = synced,
-+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 48.dp),
++        // The round buttons down the right of the screen sit over the end of
++        // the list, so the end keeps clear of them.
++        contentPadding = PaddingValues(start = 16.dp, end = 64.dp, top = 48.dp, bottom = 48.dp),
 +        modifier = modifier
 +            .fillMaxSize()
 +            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
@@ -252,6 +254,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                age = if (synced) activeLine - index else 0,
 +                synced = synced,
 +                positionMs = positionMs,
++                measurer = measurer,
 +                showTranslation = showTranslation,
 +                onClick = { line.startTimeMs?.let(onSeek) },
 +            )
@@ -292,6 +295,12 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +        atEnd[index] = end
 +        if (previous >= 0) next[previous] = index
 +        previous = index
++    }
++    // A gap in the song shows the typing dots, and the dots belong on the side
++    // the next line is about to come from, not the side of the last one.
++    var upcoming = end
++    for (index in lines.indices.reversed()) {
++        if (lines[index].text.isBlank()) atEnd[index] = upcoming else upcoming = atEnd[index]
 +    }
 +    return ChatLayout(atEnd, next)
 +}
@@ -363,60 +372,84 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +}
 +
 +/**
-+ * The line as it stands at [positionMs]: words already sung in place, words
-+ * not yet sung there but see-through, so the bubble keeps the size it will end
-+ * up and nothing moves. A word in its pop is also see-through here, because it
-+ * is drawn bigger on top by [drawPoppingWords].
++ * What is needed to draw the words of one line, worked out once per line and
++ * not once per frame: each word measured on its own, regular and bold, and the
++ * box it occupies in the line. Everything here depends only on the text, so
++ * the song moving on costs a few draw calls and no text layout at all.
 + */
-+private fun revealed(line: LyricLine, reveal: Reveal, positionMs: Long, color: Color): AnnotatedString {
-+    val done = reveal.starts.isEmpty() ||
-+        positionMs >= reveal.starts.last() + holdMs(reveal, reveal.starts.lastIndex) + SETTLE_MS
-+    return buildAnnotatedString {
-+        append(line.text)
-+        addStyle(SpanStyle(color = if (done) color else Color.Transparent), 0, line.text.length)
-+        if (done) return@buildAnnotatedString
-+        for (i in reveal.starts.indices) {
-+            if (positionMs < reveal.starts[i] || popping(reveal, i, positionMs)) continue
-+            val range = reveal.ranges[i]
-+            addStyle(SpanStyle(color = color), range.first, range.last + 1)
++private class LineDrawing {
++    var layout: TextLayoutResult? = null
++    var normal: List<TextLayoutResult> = emptyList()
++    var bold: List<TextLayoutResult> = emptyList()
++    var boxes: List<Rect> = emptyList()
++
++    fun build(
++        layout: TextLayoutResult,
++        line: LyricLine,
++        reveal: Reveal,
++        style: TextStyle,
++        measurer: TextMeasurer,
++    ) {
++        val normalWords = ArrayList<TextLayoutResult>(reveal.ranges.size)
++        val boldWords = ArrayList<TextLayoutResult>(reveal.ranges.size)
++        val wordBoxes = ArrayList<Rect>(reveal.ranges.size)
++        val boldStyle = style.copy(fontWeight = FontWeight.Bold)
++        for (range in reveal.ranges) {
++            val fits = range.first >= 0 &&
++                range.last < line.text.length &&
++                range.last < layout.layoutInput.text.length
++            val word = if (fits) {
++                AnnotatedString(line.text.substring(range.first, range.last + 1))
++            } else {
++                AnnotatedString("")
++            }
++            val first = if (fits) layout.getBoundingBox(range.first) else Rect.Zero
++            val end = if (fits) layout.getBoundingBox(range.last) else Rect.Zero
++            wordBoxes.add(Rect(first.left, first.top, end.right, first.bottom))
++            normalWords.add(measurer.measure(word, style))
++            boldWords.add(measurer.measure(word, boldStyle))
 +        }
++        normal = normalWords
++        bold = boldWords
++        boxes = wordBoxes
++        this.layout = layout
 +    }
 +}
 +
 +/**
-+ * Draws each word that is in its pop, bold and scaled up about its own
-+ * centre, over the line. It is a drawing, not part of the text, so it does not
-+ * push the words beside it: it grows over them, as in the video.
++ * Draws the line word by word as it is sung: a word not yet sung is not
++ * drawn, one in its pop is drawn bold and scaled up about its own centre
++ * (a drawing, so it grows over its neighbours and pushes none), and the rest
++ * are drawn as they are. Called from the draw phase, so a moving song
++ * redraws this and nothing else.
 + */
-+private fun DrawScope.drawPoppingWords(
-+    layout: TextLayoutResult?,
-+    line: LyricLine,
++private fun DrawScope.drawSungWords(
++    drawing: LineDrawing,
 +    reveal: Reveal,
 +    positionMs: Long,
 +    color: Color,
-+    style: TextStyle,
-+    measurer: TextMeasurer,
 +) {
-+    if (layout == null) return
 +    for (i in reveal.starts.indices) {
-+        if (!popping(reveal, i, positionMs)) continue
-+        val range = reveal.ranges[i]
-+        if (range.last >= line.text.length || range.last >= layout.layoutInput.text.length) continue
-+        val first = layout.getBoundingBox(range.first)
-+        val end = layout.getBoundingBox(range.last)
-+        val center = Offset((first.left + end.right) / 2f, (first.top + first.bottom) / 2f)
-+        val word = measurer.measure(
-+            AnnotatedString(line.text.substring(range.first, range.last + 1)),
-+            style.copy(fontWeight = FontWeight.Bold),
-+        )
-+        val fade = ((positionMs - reveal.starts[i]).toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
-+        val grow = popScale(reveal, i, positionMs)
-+        withTransform({ scale(grow, grow, center) }) {
-+            drawText(
-+                word,
-+                color = color.copy(alpha = fade),
-+                topLeft = Offset(center.x - word.size.width / 2f, center.y - word.size.height / 2f),
-+            )
++        val t = positionMs - reveal.starts[i]
++        if (t < 0) continue
++        val box = drawing.boxes[i]
++        if (popping(reveal, i, positionMs)) {
++            val word = drawing.bold[i]
++            val center = box.center
++            val fade = (t.toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
++            val grow = popScale(reveal, i, positionMs)
++            withTransform({ scale(grow, grow, center) }) {
++                drawText(
++                    word,
++                    color = color.copy(alpha = fade),
++                    topLeft = Offset(
++                        center.x - word.size.width / 2f,
++                        center.y - word.size.height / 2f,
++                    ),
++                )
++            }
++        } else {
++            drawText(drawing.normal[i], color = color, topLeft = Offset(box.left, box.top))
 +        }
 +    }
 +}
@@ -432,6 +465,7 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +    age: Int,
 +    synced: Boolean,
 +    positionMs: State<Long>,
++    measurer: TextMeasurer,
 +    showTranslation: Boolean,
 +    onClick: () -> Unit,
 +) {
@@ -516,33 +550,38 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +                    // Only the line being sung reads the position, so only it
 +                    // redraws as the song moves.
 +                    val timed = synced && newest
-+                    val reveal = remember(line, endMs) { revealOf(line, endMs) }
-+                    val measurer = rememberTextMeasurer()
-+                    // Where the words of the line ended up, for drawing the
-+                    // popping ones over them. Not state: nothing should
-+                    // recompose when it is set.
++                    // Only the line being sung needs its words timed.
++                    val reveal = remember(line, endMs, timed) {
++                        if (timed) revealOf(line, endMs) else null
++                    }
++                    val drawing = remember { LineDrawing() }
++                    // Where the words of the line ended up. Not state: nothing
++                    // should recompose when it is set.
 +                    val layoutHolder = remember { arrayOfNulls<TextLayoutResult>(1) }
 +                    val textStyle = MaterialTheme.typography.bodyLarge.copy(
 +                        fontSize = 18.sp,
 +                        lineHeight = 24.sp,
 +                        fontWeight = FontWeight.Medium,
 +                    )
++                    // While the line is being sung this text is invisible: it
++                    // only gives the bubble its size and the words their
++                    // places. The words are drawn over it, one by one, as
++                    // they are sung (see drawSungWords).
 +                    Text(
-+                        if (timed) {
-+                            revealed(line, reveal, positionMs.value, sung)
-+                        } else {
-+                            AnnotatedString(line.text)
-+                        },
++                        line.text,
 +                        style = textStyle,
-+                        color = sung,
++                        color = if (timed) Color.Transparent else sung,
 +                        onTextLayout = { layoutHolder[0] = it },
-+                        modifier = if (timed) {
++                        modifier = if (reveal != null) {
 +                            Modifier.drawWithContent {
 +                                drawContent()
-+                                drawPoppingWords(
-+                                    layoutHolder[0], line, reveal, positionMs.value,
-+                                    sung, textStyle, measurer,
-+                                )
++                                val layout = layoutHolder[0]
++                                if (layout != null) {
++                                    if (drawing.layout !== layout) {
++                                        drawing.build(layout, line, reveal, textStyle, measurer)
++                                    }
++                                    drawSungWords(drawing, reveal, positionMs.value, sung)
++                                }
 +                            }
 +                        } else {
 +                            Modifier
