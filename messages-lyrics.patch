@@ -60,8 +60,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptio
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 02:46:00.441831360 +0000
-@@ -0,0 +1,594 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 02:58:56.591540213 +0000
+@@ -0,0 +1,595 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -410,7 +410,8 @@ diff -ruN Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyr
 +            style.copy(fontWeight = FontWeight.Bold),
 +        )
 +        val fade = ((positionMs - reveal.starts[i]).toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
-+        withTransform({ scale(popScale(reveal, i, positionMs), pivot = center) }) {
++        val grow = popScale(reveal, i, positionMs)
++        withTransform({ scale(grow, grow, center) }) {
 +            drawText(
 +                word,
 +                color = color.copy(alpha = fade),
