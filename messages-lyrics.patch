@@ -437,8 +437,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Lyri
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 09:48:18.152978976 +0530
-@@ -0,0 +1,688 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 09:41:48.002404880 +0530
+@@ -0,0 +1,756 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -512,22 +512,29 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +import dev.lelonio.square.data.LyricLine
 +import dev.lelonio.square.data.Lyrics
 +import kotlin.math.abs
++import kotlin.math.cos
++import kotlin.math.exp
 +import kotlinx.coroutines.flow.collectLatest
 +
 +/** The blue of a sent message. */
 +private val SentBlue = Color(0xFF0A84FF)
 +
-+/** How long a word takes to fade in once it is sung. */
-+private const val WORD_FADE_MS = 90f
++/** How long one letter takes to pop in and settle once it is its turn. */
++private const val LETTER_MS = 320f
 +
-+/** How long a word stays at its biggest, bold, before it starts to ease back. */
-+private const val WORD_HOLD_MS = 110f
++/** How soon a letter is fully there; it is drawn fading in over this. */
++private const val LETTER_FADE_MS = 70f
 +
-+/** How long it then takes to ease back to the size and weight of the rest. */
-+private const val WORD_SETTLE_MS = 220f
++/**
++ * The gap between one letter and the next within a word: the word's time
++ * shared out over its letters, but never so slow that a long-held word
++ * drags, nor so fast that the letters stop reading as coming one by one.
++ */
++private const val LETTER_GAP_MIN_MS = 18f
++private const val LETTER_GAP_MAX_MS = 55f
 +
-+/** How much bigger than the rest of the line a word is at its biggest. */
-+private const val POP = 0.18f
++/** The share of a word's time its letters are spread over. */
++private const val LETTER_SPREAD = 0.85f
 +
 +/**
 + * How far ahead of the song's reported position a new bubble is sent. The
@@ -733,14 +740,21 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    return Reveal(starts, ends, spans)
 +}
 +
-+/** How long a word's whole pop lasts, from the moment it is sung. */
-+private const val POP_TOTAL_MS = WORD_HOLD_MS + WORD_SETTLE_MS
-+
-+/** Overshoots a little on the way to 1, like a spring. */
-+private fun backOut(x: Float): Float {
-+    val c = x.coerceIn(0f, 1f) - 1f
-+    return 1f + 2.70158f * c * c * c + 1.70158f * c * c
++/** When letter [k] of word [i] (of [count] letters) starts to appear. */
++private fun letterStart(reveal: Reveal, i: Int, k: Int, count: Int): Float {
++    val span = (reveal.ends[i] - reveal.starts[i]).coerceAtLeast(1L).toFloat()
++    val gap = (span * LETTER_SPREAD / count.coerceAtLeast(1))
++        .coerceIn(LETTER_GAP_MIN_MS, LETTER_GAP_MAX_MS)
++    return reveal.starts[i] + gap * k
 +}
++
++/**
++ * The spring a letter lands with, 1 at the start of its turn and dying away
++ * through zero, past it and back, to nothing: it drives both how small the
++ * letter starts and how far above its place it is dropped from.
++ */
++private fun letterSpring(x: Float): Float =
++    exp(-4.5f * x) * cos(11f * x)
 +
 +/**
 + * What is needed to draw the words of one line: the box each word occupies in
@@ -753,15 +767,21 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +private class LineDrawing {
 +    var layout: TextLayoutResult? = null
 +    var boxes: List<Rect> = emptyList()
++
++    /** For each word, its letters: the text of each and the box it sits in on the line. */
++    var letters: List<List<String>> = emptyList()
++    var letterBoxes: List<List<Rect>> = emptyList()
++
 +    private var words: List<AnnotatedString> = emptyList()
 +    private var regular: Array<TextLayoutResult?> = emptyArray()
-+    private var heavy: Array<TextLayoutResult?> = emptyArray()
++    private val single = HashMap<String, TextLayoutResult>()
 +    private var style: TextStyle = TextStyle.Default
-+    private var boldStyle: TextStyle = TextStyle.Default
 +
 +    fun build(layout: TextLayoutResult, line: LyricLine, reveal: Reveal, style: TextStyle) {
 +        val wordTexts = ArrayList<AnnotatedString>(reveal.ranges.size)
 +        val wordBoxes = ArrayList<Rect>(reveal.ranges.size)
++        val wordLetters = ArrayList<List<String>>(reveal.ranges.size)
++        val wordLetterBoxes = ArrayList<List<Rect>>(reveal.ranges.size)
 +        for (range in reveal.ranges) {
 +            val fits = range.first >= 0 &&
 +                range.last < line.text.length &&
@@ -776,31 +796,71 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +            val first = if (fits) layout.getBoundingBox(range.first) else Rect.Zero
 +            val end = if (fits) layout.getBoundingBox(range.last) else Rect.Zero
 +            wordBoxes.add(Rect(first.left, first.top, end.right, first.bottom))
++
++            // The word as letters. A mark that goes on the letter before it,
++            // or the second half of a surrogate pair, stays with that letter.
++            val texts = ArrayList<String>()
++            val rects = ArrayList<Rect>()
++            if (fits) {
++                var at = range.first
++                while (at <= range.last) {
++                    var stop = at + 1
++                    while (stop <= range.last && joinsPrevious(line.text[stop])) stop++
++                    var left = Float.MAX_VALUE
++                    var right = -Float.MAX_VALUE
++                    var top = 0f
++                    var bottom = 0f
++                    for (c in at until stop) {
++                        val box = layout.getBoundingBox(c)
++                        if (c == at) {
++                            top = box.top
++                            bottom = box.bottom
++                        }
++                        left = minOf(left, box.left)
++                        right = maxOf(right, box.right)
++                    }
++                    texts.add(line.text.substring(at, stop))
++                    rects.add(Rect(left, top, right, bottom))
++                    at = stop
++                }
++            }
++            wordLetters.add(texts)
++            wordLetterBoxes.add(rects)
 +        }
 +        words = wordTexts
 +        boxes = wordBoxes
++        letters = wordLetters
++        letterBoxes = wordLetterBoxes
 +        regular = arrayOfNulls(wordTexts.size)
-+        heavy = arrayOfNulls(wordTexts.size)
++        single.clear()
 +        this.style = style
-+        this.boldStyle = style.copy(fontWeight = FontWeight.Bold)
 +        this.layout = layout
 +    }
++
++    private fun joinsPrevious(c: Char): Boolean =
++        Character.isLowSurrogate(c) || when (Character.getType(c).toByte()) {
++            Character.NON_SPACING_MARK,
++            Character.ENCLOSING_MARK,
++            Character.COMBINING_SPACING_MARK,
++            -> true
++            else -> false
++        }
 +
 +    fun regularAt(i: Int, measurer: TextMeasurer): TextLayoutResult =
 +        regular[i] ?: measurer.measure(words[i], style).also { regular[i] = it }
 +
-+    fun boldAt(i: Int, measurer: TextMeasurer): TextLayoutResult =
-+        heavy[i] ?: measurer.measure(words[i], boldStyle).also { heavy[i] = it }
++    fun letterAt(text: String, measurer: TextMeasurer): TextLayoutResult =
++        single.getOrPut(text) { measurer.measure(text, style) }
 +}
 +
 +/**
-+ * Draws the line word by word as it is sung. A word not yet sung is not
-+ * drawn. A word just sung fades in bold and a little bigger, springing up
-+ * past that size, and holds it for an instant; then it eases back to the
-+ * size and weight of the rest, a third of a second after it came. It is
-+ * scaled about its own centre as a drawing, so it grows over its neighbours
-+ * and pushes none. Called from the draw phase, so a moving song redraws this
-+ * and nothing else.
++ * Draws the line letter by letter as it is sung: a letter not yet reached is
++ * not drawn, and each one in turn, left to right along the word, drops in
++ * from a little above and small, overshoots its size and springs back to
++ * rest. Nothing stays enlarged: a letter is back to normal a third of a
++ * second after it lands, and a word whose letters have all landed is drawn
++ * whole. Called from the draw phase, so a moving song redraws this and
++ * nothing else.
 + */
 +private fun DrawScope.drawSungWords(
 +    drawing: LineDrawing,
@@ -809,36 +869,44 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    color: Color,
 +    measurer: TextMeasurer,
 +) {
++    val pos = positionMs.toFloat()
 +    for (i in reveal.starts.indices) {
-+        val t = (positionMs - reveal.starts[i]).toFloat()
-+        if (t < 0f) continue
++        if (pos < reveal.starts[i]) continue
++        val texts = drawing.letters[i]
++        val rects = drawing.letterBoxes[i]
++        val count = texts.size
 +        val box = drawing.boxes[i]
-+        if (t >= POP_TOTAL_MS) {
++
++        // Every letter has landed: the word is just a word.
++        if (count == 0 || pos >= letterStart(reveal, i, count - 1, count) + LETTER_MS) {
 +            drawText(drawing.regularAt(i, measurer), color = color, topLeft = Offset(box.left, box.top))
 +            continue
 +        }
 +
-+        // Up with a spring, held, then eased back down.
-+        val settle = ((t - WORD_HOLD_MS) / WORD_SETTLE_MS).coerceIn(0f, 1f)
-+        val ease = settle * settle * (3f - 2f * settle)
-+        val grow = 1f + POP * (if (t < 120f) backOut(t / 120f) else 1f) * (1f - ease)
-+        val fade = (t / WORD_FADE_MS).coerceIn(0f, 1f)
-+        val centre = box.center
-+
-+        withTransform({ scale(grow, grow, centre) }) {
-+            // Bold gives way to regular as it settles, so the weight does not jump.
-+            val bold = drawing.boldAt(i, measurer)
-+            drawText(
-+                bold,
-+                color = color.copy(alpha = color.alpha * fade * (1f - ease)),
-+                topLeft = Offset(centre.x - bold.size.width / 2f, centre.y - bold.size.height / 2f),
-+            )
-+            if (ease > 0f) {
-+                val plain = drawing.regularAt(i, measurer)
++        for (k in 0 until count) {
++            val t = pos - letterStart(reveal, i, k, count)
++            if (t < 0f) break
++            val cell = rects[k]
++            val layout = drawing.letterAt(texts[k], measurer)
++            if (t >= LETTER_MS) {
 +                drawText(
-+                    plain,
-+                    color = color.copy(alpha = color.alpha * ease),
-+                    topLeft = Offset(centre.x - plain.size.width / 2f, centre.y - plain.size.height / 2f),
++                    layout,
++                    color = color,
++                    topLeft = Offset(cell.center.x - layout.size.width / 2f, cell.top),
++                )
++                continue
++            }
++            val x = t / LETTER_MS
++            val spring = letterSpring(x)
++            val scale = 1f - 0.7f * spring
++            val lift = -0.22f * layout.size.height * spring
++            val fade = (t / LETTER_FADE_MS).coerceIn(0f, 1f)
++            val centre = Offset(cell.center.x, cell.center.y + lift)
++            withTransform({ scale(scale, scale, centre) }) {
++                drawText(
++                    layout,
++                    color = color.copy(alpha = color.alpha * fade),
++                    topLeft = Offset(centre.x - layout.size.width / 2f, cell.top + lift),
 +                )
 +            }
 +        }
