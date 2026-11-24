@@ -437,8 +437,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Lyri
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 08:45:15.803986030 +0530
-@@ -0,0 +1,693 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 09:48:18.152978976 +0530
+@@ -0,0 +1,688 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -517,11 +517,17 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +/** The blue of a sent message. */
 +private val SentBlue = Color(0xFF0A84FF)
 +
-+/** How long a word takes to come in once it is sung. */
-+private const val WORD_FADE_MS = 140L
++/** How long a word takes to fade in once it is sung. */
++private const val WORD_FADE_MS = 90f
 +
-+/** How long a word takes to shrink back to size once it has been sung. */
-+private const val SETTLE_MS = 220L
++/** How long a word stays at its biggest, bold, before it starts to ease back. */
++private const val WORD_HOLD_MS = 110f
++
++/** How long it then takes to ease back to the size and weight of the rest. */
++private const val WORD_SETTLE_MS = 220f
++
++/** How much bigger than the rest of the line a word is at its biggest. */
++private const val POP = 0.18f
 +
 +/**
 + * How far ahead of the song's reported position a new bubble is sent. The
@@ -530,8 +536,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 + */
 +private const val LEAD_MS = 150L
 +
-+/** How much bigger than the rest of the line a word is while it is sung. */
-+private const val POP = 0.30f
 +
 +/**
 + * The lyrics as a conversation.
@@ -729,35 +733,13 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    return Reveal(starts, ends, spans)
 +}
 +
-+/** How long word [i] stays enlarged: as long as it is sung, within reason. */
-+private fun holdMs(reveal: Reveal, i: Int): Long =
-+    (reveal.ends[i] - reveal.starts[i]).coerceIn(250L, 900L)
++/** How long a word's whole pop lasts, from the moment it is sung. */
++private const val POP_TOTAL_MS = WORD_HOLD_MS + WORD_SETTLE_MS
 +
-+/** Whether word [i] is in its pop: coming in, held big, or settling back. */
-+private fun popping(reveal: Reveal, i: Int, positionMs: Long): Boolean =
-+    positionMs >= reveal.starts[i] &&
-+        positionMs < reveal.starts[i] + holdMs(reveal, i) + SETTLE_MS
-+
-+/**
-+ * How big word [i] is: it jumps up as it is sung, overshooting a little and
-+ * settling, stays big while it is sung, then eases back to the size of the rest.
-+ */
-+private fun popScale(reveal: Reveal, i: Int, positionMs: Long): Float {
-+    val t = positionMs - reveal.starts[i]
-+    val hold = holdMs(reveal, i)
-+    val rise = 120f
-+    return when {
-+        t < 0 -> 1f
-+        t < rise -> {
-+            val x = t / rise - 1f
-+            1f + POP * (1f + 2.70158f * x * x * x + 1.70158f * x * x)
-+        }
-+        t < hold -> 1f + POP
-+        else -> {
-+            val x = ((t - hold).toFloat() / SETTLE_MS).coerceIn(0f, 1f)
-+            1f + POP * (1f - x * x * (3f - 2f * x))
-+        }
-+    }
++/** Overshoots a little on the way to 1, like a spring. */
++private fun backOut(x: Float): Float {
++    val c = x.coerceIn(0f, 1f) - 1f
++    return 1f + 2.70158f * c * c * c + 1.70158f * c * c
 +}
 +
 +/**
@@ -812,11 +794,13 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +}
 +
 +/**
-+ * Draws the line word by word as it is sung: a word not yet sung is not
-+ * drawn, one in its pop is drawn bold and scaled up about its own centre
-+ * (a drawing, so it grows over its neighbours and pushes none), and the rest
-+ * are drawn as they are. Called from the draw phase, so a moving song
-+ * redraws this and nothing else.
++ * Draws the line word by word as it is sung. A word not yet sung is not
++ * drawn. A word just sung fades in bold and a little bigger, springing up
++ * past that size, and holds it for an instant; then it eases back to the
++ * size and weight of the rest, a third of a second after it came. It is
++ * scaled about its own centre as a drawing, so it grows over its neighbours
++ * and pushes none. Called from the draw phase, so a moving song redraws this
++ * and nothing else.
 + */
 +private fun DrawScope.drawSungWords(
 +    drawing: LineDrawing,
@@ -826,26 +810,37 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    measurer: TextMeasurer,
 +) {
 +    for (i in reveal.starts.indices) {
-+        val t = positionMs - reveal.starts[i]
-+        if (t < 0) continue
++        val t = (positionMs - reveal.starts[i]).toFloat()
++        if (t < 0f) continue
 +        val box = drawing.boxes[i]
-+        if (popping(reveal, i, positionMs)) {
-+            val word = drawing.boldAt(i, measurer)
-+            val center = box.center
-+            val fade = (t.toFloat() / WORD_FADE_MS).coerceIn(0f, 1f)
-+            val grow = popScale(reveal, i, positionMs)
-+            withTransform({ scale(grow, grow, center) }) {
++        if (t >= POP_TOTAL_MS) {
++            drawText(drawing.regularAt(i, measurer), color = color, topLeft = Offset(box.left, box.top))
++            continue
++        }
++
++        // Up with a spring, held, then eased back down.
++        val settle = ((t - WORD_HOLD_MS) / WORD_SETTLE_MS).coerceIn(0f, 1f)
++        val ease = settle * settle * (3f - 2f * settle)
++        val grow = 1f + POP * (if (t < 120f) backOut(t / 120f) else 1f) * (1f - ease)
++        val fade = (t / WORD_FADE_MS).coerceIn(0f, 1f)
++        val centre = box.center
++
++        withTransform({ scale(grow, grow, centre) }) {
++            // Bold gives way to regular as it settles, so the weight does not jump.
++            val bold = drawing.boldAt(i, measurer)
++            drawText(
++                bold,
++                color = color.copy(alpha = color.alpha * fade * (1f - ease)),
++                topLeft = Offset(centre.x - bold.size.width / 2f, centre.y - bold.size.height / 2f),
++            )
++            if (ease > 0f) {
++                val plain = drawing.regularAt(i, measurer)
 +                drawText(
-+                    word,
-+                    color = color.copy(alpha = fade),
-+                    topLeft = Offset(
-+                        center.x - word.size.width / 2f,
-+                        center.y - word.size.height / 2f,
-+                    ),
++                    plain,
++                    color = color.copy(alpha = color.alpha * ease),
++                    topLeft = Offset(centre.x - plain.size.width / 2f, centre.y - plain.size.height / 2f),
 +                )
 +            }
-+        } else {
-+            drawText(drawing.regularAt(i, measurer), color = color, topLeft = Offset(box.left, box.top))
 +        }
 +    }
 +}
