@@ -437,8 +437,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Lyri
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 06:51:09.269705249 +0530
-@@ -0,0 +1,686 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 08:45:15.803986030 +0530
+@@ -0,0 +1,693 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
@@ -523,6 +523,13 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +/** How long a word takes to shrink back to size once it has been sung. */
 +private const val SETTLE_MS = 220L
 +
++/**
++ * How far ahead of the song's reported position a new bubble is sent. The
++ * position is only reported every so often and the bubble then takes a moment
++ * to pop in, so without this the message lands visibly after the word.
++ */
++private const val LEAD_MS = 150L
++
 +/** How much bigger than the rest of the line a word is while it is sung. */
 +private const val POP = 0.30f
 +
@@ -560,7 +567,7 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    val activeLine by remember(lyrics) {
 +        derivedStateOf {
 +            if (!lyrics.synced) -1
-+            else lyrics.lines.indexOfLast { (it.startTimeMs ?: 0L) <= positionMs.value }
++            else lyrics.lines.indexOfLast { (it.startTimeMs ?: 0L) <= positionMs.value + LEAD_MS }
 +        }
 +    }
 +
@@ -904,7 +911,7 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    val pop = remember { Animatable(if (newest) 0f else 1f) }
 +    LaunchedEffect(Unit) {
 +        if (pop.value < 1f) {
-+            pop.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMediumLow))
++            pop.animateTo(1f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium))
 +        }
 +    }
 +
@@ -916,13 +923,13 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +            age == 1 -> 0.62f
 +            else -> 0.42f
 +        },
-+        animationSpec = tween(300),
++        animationSpec = tween(180),
 +        label = "messageDim",
 +    )
 +    // A thin outline on the line being sung.
 +    val ring by animateFloatAsState(
 +        targetValue = if (newest) 1f else 0f,
-+        animationSpec = tween(250),
++        animationSpec = tween(150),
 +        label = "messageRing",
 +    )
 +
