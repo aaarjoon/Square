@@ -416,8 +416,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/KineticLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/KineticLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/KineticLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/KineticLyricsView.kt	2026-11-24 12:50:33.176957496 +0530
-@@ -0,0 +1,372 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/KineticLyricsView.kt	2026-11-24 17:31:20.408100290 +0530
+@@ -0,0 +1,389 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.foundation.Canvas
@@ -445,10 +445,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +import dev.lelonio.square.data.LyricLine
 +import dev.lelonio.square.data.Lyrics
 +import kotlinx.coroutines.flow.collectLatest
-+import kotlin.math.PI
 +import kotlin.math.abs
 +import kotlin.math.sign
-+import kotlin.math.sin
 +
 +/** The tint of the word that is coming up. */
 +private val KineticAccent = Color(0xFFFF8A5B)
@@ -465,6 +463,13 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +/** The quickest and slowest the stack climbs to the next word. */
 +private const val CLIMB_MIN_MS = 90L
 +private const val CLIMB_MAX_MS = 230L
++
++/**
++ * How far ahead of the song's reported position a word is taken to be sung.
++ * The position is only reported every so often, so without this each word
++ * would come in visibly after it is heard.
++ */
++private const val LEAD_MS = 70L
 +
 +/** How long after a word ends, with nothing following, the words go out. */
 +private const val IDLE_AFTER_MS = 2500L
@@ -581,7 +586,12 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +}
 +
 +/** Every word of the song, in the order it is sung, with when it starts and when it is done. */
-+private class SungWords(val starts: LongArray, val ends: LongArray, val texts: Array<String>)
++private class SungWords(
++    val starts: LongArray,
++    val ends: LongArray,
++    val texts: Array<String>,
++    val icons: Array<String?>,
++)
 +
 +private fun sungWordsOf(lyrics: Lyrics): SungWords {
 +    val starts = ArrayList<Long>()
@@ -604,7 +614,12 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +            texts.add(text)
 +        }
 +    }
-+    return SungWords(starts.toLongArray(), ends.toLongArray(), texts.toTypedArray())
++    return SungWords(
++        starts.toLongArray(),
++        ends.toLongArray(),
++        texts.toTypedArray(),
++        Array(texts.size) { iconFor(texts[it]) },
++    )
 +}
 +
 +/** The last word that has started by [pos], or -1. */
@@ -639,7 +654,7 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 + * beside it where the word has one (a heart for "heart", a car for "car").
 + * The word just sung stays above it, small; the word coming up waits below,
 + * smaller still and tinted. When the next word is sung the whole column
-+ * climbs a place with a little spring and a smear of motion: the word just
++ * climbs a place with a little spring: the word just
 + * sung goes up and small, the next grows into the middle, and a new one
 + * comes up below.
 + *
@@ -692,7 +707,7 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +    Canvas(modifier.fillMaxSize()) {
 +        val count = words.texts.size
 +        if (count == 0) return@Canvas
-+        val pos = clock.value
++        val pos = clock.value + LEAD_MS
 +        val now = wordAt(words.starts, pos)
 +        if (now < 0) return@Canvas
 +        if (layouts.size > 48) layouts.clear()
@@ -714,81 +729,83 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Kine
 +        val climbMs = (words.starts[now] - before).coerceIn(CLIMB_MIN_MS, CLIMB_MAX_MS).toFloat()
 +        val progress = ((pos - words.starts[now]) / climbMs).coerceIn(0f, 1f)
 +        val shift = 1f - outBack(progress)
-+        // The smear peaks halfway through the climb.
-+        val smear = sin(PI.toFloat() * progress)
 +
 +        val bigHeight = BIG_SP.sp.toPx()
 +        val gap = 6.dp.toPx()
 +        val nearStep = bigHeight * (0.5f + 0.5f * NEAR_SCALE) + gap
 +        val farStep = bigHeight * (0.5f * NEAR_SCALE + 0.5f * FAR_SCALE) + gap
 +
-+        fun scaleAt(place: Float): Float {
-+            val a = abs(place)
-+            return when {
-+                a < 1f -> mixF(1f, NEAR_SCALE, a)
-+                a < 2f -> mixF(NEAR_SCALE, FAR_SCALE, a - 1f)
-+                else -> FAR_SCALE
-+            }
-+        }
-+
-+        fun yAt(place: Float): Float {
-+            val a = abs(place)
-+            val step = if (a <= 1f) a * nearStep else nearStep + (a - 1f).coerceAtMost(1f) * farStep
-+            return centreY + place.sign * step
-+        }
-+
-+        fun alphaAt(place: Float): Float {
-+            val a = abs(place)
-+            val near = if (place > 0f) 0.6f else 0.65f
-+            return if (a <= 1f) mixF(1f, near, a) else mixF(near, 0f, (a - 1f).coerceIn(0f, 1f))
-+        }
-+
 +        // Farthest first, so the word being sung is drawn over the rest.
-+        for (index in intArrayOf(now - 2, now + 2, now - 1, now + 1, now)) {
++        // Only the words that can be seen are drawn: at most five, once each,
++        // sharp: nothing is smeared or drawn twice.
++        for (step in 0 until 5) {
++            val index = when (step) {
++                0 -> now - 2
++                1 -> now + 2
++                2 -> now - 1
++                3 -> now + 1
++                else -> now
++            }
 +            if (index < 0 || index >= count) continue
 +            val place = (index - now) + shift
-+            val alpha = alphaAt(place) * overall
++            val alpha = kineticAlpha(place) * overall
 +            if (alpha <= 0.01f) continue
 +
 +            val text = words.texts[index]
 +            val layout = layouts.getOrPut(index) { measurer.measure(text, bigStyle) }
-+            val icon = iconFor(text)
++            val icon = words.icons[index]
 +            val iconLayout = icon?.let { iconLayouts.getOrPut(it) { measurer.measure(it, iconStyle) } }
 +            val iconSpace = if (iconLayout != null) iconLayout.size.width + 12.dp.toPx() else 0f
 +            val wholeWidth = layout.size.width + iconSpace
 +
 +            // A word wider than the room is made to fit it.
 +            val fit = (roomWidth * 0.92f / wholeWidth).coerceAtMost(1f)
-+            val scale = scaleAt(place) * fit
-+            val y = yAt(place)
++            val scale = kineticScale(place) * fit
++            val y = kineticY(place, centreY, nearStep, farStep)
 +            val color = if (place > 0f) lerp(ink, KineticAccent, place.coerceIn(0f, 1f)) else ink
 +
-+            // A word that is moving is smeared up and down, a little.
-+            val reach = smear * bigHeight * 0.16f
-+            val ghosts = reach > 2f
-+            val offsets = if (ghosts) floatArrayOf(-reach, 0f, reach) else floatArrayOf(0f)
-+            val weight = if (ghosts) floatArrayOf(0.3f, 0.5f, 0.3f) else floatArrayOf(1f)
-+
-+            for (k in offsets.indices) {
-+                val centre = Offset(centreX, y + offsets[k])
-+                withTransform({ scale(scale, scale, centre) }) {
-+                    val startX = centre.x - wholeWidth / 2f
-+                    if (iconLayout != null) {
-+                        drawText(
-+                            iconLayout,
-+                            topLeft = Offset(startX, centre.y - iconLayout.size.height / 2f),
-+                            alpha = alpha * weight[k],
-+                        )
-+                    }
++            val centre = Offset(centreX, y)
++            val startX = centreX - wholeWidth / 2f
++            withTransform({ scale(scale, scale, centre) }) {
++                if (iconLayout != null) {
 +                    drawText(
-+                        layout,
-+                        color = color.copy(alpha = color.alpha * alpha * weight[k]),
-+                        topLeft = Offset(startX + iconSpace, centre.y - layout.size.height / 2f),
++                        iconLayout,
++                        topLeft = Offset(startX, y - iconLayout.size.height / 2f),
++                        alpha = alpha,
 +                    )
 +                }
++                drawText(
++                    layout,
++                    color = color.copy(alpha = color.alpha * alpha),
++                    topLeft = Offset(startX + iconSpace, y - layout.size.height / 2f),
++                )
 +            }
 +        }
 +    }
++}
++
++/** How big a word is [place] places from the one being sung (0). */
++private fun kineticScale(place: Float): Float {
++    val a = abs(place)
++    return when {
++        a < 1f -> mixF(1f, NEAR_SCALE, a)
++        a < 2f -> mixF(NEAR_SCALE, FAR_SCALE, a - 1f)
++        else -> FAR_SCALE
++    }
++}
++
++/** How far down the screen it is. */
++private fun kineticY(place: Float, centreY: Float, nearStep: Float, farStep: Float): Float {
++    val a = abs(place)
++    val step = if (a <= 1f) a * nearStep else nearStep + (a - 1f).coerceAtMost(1f) * farStep
++    return centreY + place.sign * step
++}
++
++/** How clear it is: the word above fades a little more than the one below. */
++private fun kineticAlpha(place: Float): Float {
++    val a = abs(place)
++    val near = if (place > 0f) 0.6f else 0.65f
++    return if (a <= 1f) mixF(1f, near, a) else mixF(near, 0f, (a - 1f).coerceIn(0f, 1f))
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-24 06:51:09.239948952 +0530
@@ -1553,15 +1570,15 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/NotificationsLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/NotificationsLyricsView.kt
 --- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/NotificationsLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/NotificationsLyricsView.kt	2026-11-24 12:39:24.135523707 +0530
-@@ -0,0 +1,424 @@
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/NotificationsLyricsView.kt	2026-11-24 17:55:00.073718974 +0530
+@@ -0,0 +1,691 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.animation.core.Animatable
 +import androidx.compose.animation.core.Spring
 +import androidx.compose.animation.core.spring
 +import androidx.compose.animation.core.tween
-+import androidx.compose.foundation.Image
++import androidx.compose.foundation.Canvas
 +import androidx.compose.foundation.background
 +import androidx.compose.foundation.border
 +import androidx.compose.foundation.clickable
@@ -1593,13 +1610,23 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +import androidx.compose.ui.Alignment
 +import androidx.compose.ui.Modifier
 +import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.Brush
 +import androidx.compose.ui.graphics.Color
-+import androidx.compose.ui.graphics.ImageBitmap
-+import androidx.compose.ui.graphics.asImageBitmap
++import androidx.compose.ui.geometry.CornerRadius
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.graphics.Path
++import androidx.compose.ui.graphics.PathFillType
++import androidx.compose.ui.graphics.StrokeCap
++import androidx.compose.ui.graphics.StrokeJoin
++import androidx.compose.ui.graphics.drawscope.DrawScope
++import androidx.compose.ui.graphics.drawscope.Stroke
++import androidx.compose.ui.graphics.drawscope.rotate
++import androidx.compose.ui.graphics.drawscope.withTransform
++import androidx.compose.ui.graphics.vector.PathParser
 +import androidx.compose.ui.graphics.graphicsLayer
 +import androidx.compose.ui.graphics.luminance
 +import androidx.compose.ui.input.pointer.pointerInput
-+import androidx.compose.ui.platform.LocalContext
 +import androidx.compose.ui.res.stringResource
 +import androidx.compose.ui.text.font.FontWeight
 +import androidx.compose.ui.unit.dp
@@ -1607,7 +1634,10 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +import dev.lelonio.square.R
 +import dev.lelonio.square.data.LyricLine
 +import dev.lelonio.square.data.Lyrics
++import kotlin.math.PI
 +import kotlin.math.abs
++import kotlin.math.cos
++import kotlin.math.sin
 +
 +/**
 + * How far ahead of the song's reported position a notification arrives, for
@@ -1619,11 +1649,316 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +private const val BEHIND = 2
 +
 +/**
++ * What a line of lyrics is about, which decides the little picture on its
++ * notification. Each mood has a picture drawn here (so there is nothing to
++ * add to the project), a colour for the tile it sits on, and the words that
++ * suggest it. A line is given the mood whose words it has the most of; where
++ * two are level the one listed first wins, and a line with none of them gets
++ * the music note.
++ */
++private enum class Mood(val top: Color, val bottom: Color, val words: Set<String>) {
++    LOVE(
++        Color(0xFFFF7A8E), Color(0xFFFF2D55),
++        setOf(
++            "love", "loved", "loves", "loving", "lovin", "lover", "lovers", "heart", "hearts",
++            "kiss", "kisses", "kissing", "baby", "babe", "darling", "honey", "sweetheart",
++            "adore", "crush", "romance", "romantic", "affection", "hold", "holding", "embrace",
++            "forever", "mine", "yours", "cuddle", "desire", "beloved", "angel",
++        ),
++    ),
++    HEARTBREAK(
++        Color(0xFF9A8CFF), Color(0xFF5E5CE6),
++        setOf(
++            "hurt", "hurts", "hurting", "broken", "break", "breaking", "pain", "painful",
++            "miss", "missing", "goodbye", "lost", "lonely", "alone", "empty", "sorry",
++            "leave", "leaving", "left", "gone", "die", "died", "dead", "grave", "lie", "lies",
++            "liar", "betray", "heartbreak", "ruined", "ruin", "regret", "sad", "sadness",
++        ),
++    ),
++    LOCATION(
++        Color(0xFF4ADE80), Color(0xFF16A34A),
++        setOf(
++            "street", "streets", "road", "roads", "highway", "avenue", "boulevard", "city",
++            "cities", "town", "hometown", "downtown", "neighborhood", "block", "corner",
++            "island", "beach", "mountain", "mountains", "valley", "desert", "forest", "bridge",
++            "airport", "station", "map", "address", "miles", "country", "world",
++            "paris", "london", "tokyo", "york", "angeles", "california", "texas", "miami",
++            "chicago", "brooklyn", "harlem", "manhattan", "vegas", "hollywood", "detroit",
++            "atlanta", "houston", "dallas", "jersey", "boston", "seattle", "berlin", "rome",
++            "madrid", "mumbai", "delhi", "india", "africa", "america", "europe", "asia",
++            "china", "japan", "mexico", "canada", "ibiza", "venice", "hawaii", "florida",
++            "shibuya", "kyoto", "brazil", "italy", "france", "spain", "ireland", "scotland",
++        ),
++    ),
++    FIRE(
++        Color(0xFFFF9A3D), Color(0xFFFF3B30),
++        setOf(
++            "fire", "flame", "flames", "burn", "burns", "burning", "burnin", "hot", "heat",
++            "smoke", "smoking", "lit", "blaze", "ashes", "ash", "inferno", "torch", "fuel",
++            "spark", "sparks", "explode", "explosion", "volcano",
++        ),
++    ),
++    ENERGY(
++        Color(0xFFFFD34D), Color(0xFFFF9F0A),
++        setOf(
++            "fun", "party", "parties", "dance", "dancing", "dancin", "jump", "jumping", "wild",
++            "crazy", "loud", "energy", "fast", "run", "running", "runnin", "rush", "electric",
++            "lightning", "thunder", "power", "powerful", "shake", "shaking", "bounce",
++            "bouncing", "club", "hype", "alive", "move", "moving", "speed", "speeding",
++            "racing", "race", "drive", "driving", "boom", "bang", "crash", "wake", "awake",
++            "adrenaline", "rage", "scream", "screaming", "shout", "shouting", "go", "tonight",
++        ),
++    ),
++    NIGHT(
++        Color(0xFF7C83FF), Color(0xFF3A2FA0),
++        setOf(
++            "night", "nights", "moon", "moonlight", "midnight", "dark", "darkness", "sleep",
++            "sleeping", "dream", "dreams", "dreaming", "bed", "dusk", "evening", "shadow",
++            "shadows", "nightmare", "stars", "starry", "sky", "skies",
++        ),
++    ),
++    RAIN(
++        Color(0xFF60A5FA), Color(0xFF2563EB),
++        setOf(
++            "rain", "raining", "storm", "cry", "cries", "crying", "cryin", "tears", "tear",
++            "water", "wet", "ocean", "sea", "river", "flood", "drown", "drowning", "swim",
++            "swimming", "pool", "wave", "waves", "blue", "drip", "sweat", "bath", "shower",
++        ),
++    ),
++    TIME(
++        Color(0xFF67E8F9), Color(0xFF0891B2),
++        setOf(
++            "time", "times", "minute", "minutes", "hour", "hours", "clock", "second",
++            "seconds", "year", "years", "tomorrow", "yesterday", "wait", "waiting", "late",
++            "ago", "age", "always", "never", "while", "erase", "erasing", "erased", "forget",
++            "forgot", "remember", "memory", "memories", "past", "future",
++        ),
++    ),
++    SUCCESS(
++        Color(0xFFFDE68A), Color(0xFFF59E0B),
++        setOf(
++            "king", "queen", "crown", "rich", "money", "cash", "gold", "golden", "win",
++            "winner", "winning", "champion", "boss", "top", "fame", "famous", "legend",
++            "royal", "throne", "diamond", "diamonds", "millions", "million", "paid", "luxury",
++        ),
++    ),
++    SHINE(
++        Color(0xFFFFE27A), Color(0xFFFFB400),
++        setOf(
++            "star", "shine", "shining", "shiny", "bright", "brighter", "glow", "glowing",
++            "light", "lights", "shooting", "flash", "flashing", "glitter", "gleam", "stage",
++        ),
++    ),
++    SUN(
++        Color(0xFFFFD60A), Color(0xFFFFA000),
++        setOf(
++            "sun", "sunshine", "sunny", "sunrise", "sunset", "summer", "morning", "warm",
++            "daylight", "day", "days", "daybreak", "tan", "heaven",
++        ),
++    ),
++    HAPPY(
++        Color(0xFFFFC371), Color(0xFFFF5F6D),
++        setOf(
++            "happy", "smile", "smiling", "smiles", "laugh", "laughing", "laughter", "joy",
++            "joyful", "good", "great", "bliss", "free", "freedom", "easy", "fine", "glad",
++            "cheers", "celebrate", "celebration", "yeah", "oh", "whoa",
++        ),
++    ),
++    SPIRIT(
++        Color(0xFFC4B5FD), Color(0xFF8B5CF6),
++        setOf(
++            "magic", "magical", "wish", "wishes", "wishing", "believe", "faith", "soul",
++            "spirit", "pray", "prayer", "praying", "god", "miracle", "angels", "ghost",
++            "universe", "destiny", "fate", "secret", "mystery", "mind", "think",
++            "thinking", "thought", "thoughts", "feel", "feeling", "feelings",
++        ),
++    ),
++    MUSIC(
++        Color(0xFFF472B6), Color(0xFFDB2777),
++        setOf(
++            "sing", "singing", "song", "songs", "music", "melody", "play", "playing",
++            "radio", "beat", "beats", "rhythm", "sound", "sounds", "voice", "guitar", "piano",
++            "drums", "dj", "record", "tune", "lyrics", "whistle", "hum", "humming", "verse",
++            "chorus", "vinyl", "speaker", "headphones",
++        ),
++    ),
++}
++
++/** The mood of a line: the one whose words it has most of, else the music note. */
++private fun moodOf(text: String): Mood {
++    val words = text.lowercase()
++        .split(Regex("[^a-z']+"))
++        .map { it.trim('\'') }
++        .filter { it.isNotEmpty() }
++    var best = Mood.MUSIC
++    var bestCount = 0
++    for (mood in Mood.entries) {
++        val count = words.count { it in mood.words }
++        if (count > bestCount) {
++            best = mood
++            bestCount = count
++        }
++    }
++    return best
++}
++
++private val GlyphPaths = HashMap<String, Path>()
++
++private fun glyph(d: String, evenOdd: Boolean = false): Path =
++    GlyphPaths.getOrPut(d) {
++        PathParser().parsePathString(d).toPath().also {
++            if (evenOdd) it.fillType = PathFillType.EvenOdd
++        }
++    }
++
++private val StarPath: Path by lazy {
++    Path().apply {
++        for (i in 0 until 10) {
++            val angle = (-90.0 + i * 36.0) * PI / 180.0
++            val radius = if (i % 2 == 0) 10.0 else 4.5
++            val x = (12.0 + radius * cos(angle)).toFloat()
++            val y = (12.8 + radius * sin(angle)).toFloat()
++            if (i == 0) moveTo(x, y) else lineTo(x, y)
++        }
++        close()
++    }
++}
++
++private const val HEART_PATH =
++    "M12 21.2 C11 20.4 3 14.6 3 8.7 C3 5.6 5.3 3.6 8 3.6 C9.7 3.6 11.2 4.5 12 5.9 " +
++        "C12.8 4.5 14.3 3.6 16 3.6 C18.7 3.6 21 5.6 21 8.7 C21 14.6 13 20.4 12 21.2 Z"
++
++/** The picture for a mood, in white, drawn on a 24 by 24 grid scaled to fit. */
++private fun DrawScope.drawMood(mood: Mood) {
++    val white = Color.White
++    val line = Stroke(width = 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
++    val grid = size.minDimension / 24f
++    withTransform({ scale(grid, grid, Offset.Zero) }) {
++        when (mood) {
++            Mood.LOVE -> drawPath(glyph(HEART_PATH), white)
++            Mood.HEARTBREAK -> {
++                drawPath(glyph(HEART_PATH), white)
++                drawPath(
++                    glyph("M12.6 5.4 L10.4 10.2 L13.6 12.6 L11.4 20.6"),
++                    mood.bottom,
++                    style = Stroke(width = 1.9f, cap = StrokeCap.Round, join = StrokeJoin.Round),
++                )
++            }
++            Mood.LOCATION -> drawPath(
++                glyph(
++                    "M12 2 C8.1 2 5 5.1 5 9 C5 14.3 12 22 12 22 C12 22 19 14.3 19 9 " +
++                        "C19 5.1 15.9 2 12 2 Z M12 6.3 A2.7 2.7 0 1 1 11.99 6.3 Z",
++                    evenOdd = true,
++                ),
++                white,
++            )
++            Mood.FIRE -> drawPath(
++                glyph(
++                    "M12.5 2 C12.9 6 18 8.2 18 14 A6 6 0 0 1 6 14 C6 11.6 7.2 10 8.6 8.8 " +
++                        "C8.6 10.8 9.6 12 10.8 12 C10.4 8.4 11.4 4.6 12.5 2 Z",
++                ),
++                white,
++            )
++            Mood.ENERGY -> {
++                val bolt = glyph("M13.6 1.8 L5 13.4 H10.8 L9.8 22.2 L19 10 H13 Z")
++                drawPath(bolt, white)
++                drawPath(bolt, white, style = Stroke(width = 1f, join = StrokeJoin.Round))
++            }
++            Mood.NIGHT -> drawPath(
++                glyph("M20.5 14.8 A9 9 0 1 1 9.2 3.5 A7.2 7.2 0 0 0 20.5 14.8 Z"),
++                white,
++            )
++            Mood.RAIN -> drawPath(
++                glyph(
++                    "M12 2.6 C12 2.6 5.6 9.8 5.6 14.6 A6.4 6.4 0 0 0 18.4 14.6 " +
++                        "C18.4 9.8 12 2.6 12 2.6 Z",
++                ),
++                white,
++            )
++            Mood.TIME -> {
++                drawCircle(white, radius = 9f, center = Offset(12f, 12f), style = line)
++                drawPath(glyph("M12 12 L12 6.5 M12 12 L16 14.3"), white, style = line)
++            }
++            Mood.SUCCESS -> {
++                drawPath(glyph("M3 18.5 L2.6 7.2 L8 11.6 L12 4.4 L16 11.6 L21.4 7.2 L21 18.5 Z"), white)
++                drawRoundRect(
++                    white,
++                    topLeft = Offset(3f, 19.5f),
++                    size = Size(18f, 2.2f),
++                    cornerRadius = CornerRadius(1.1f, 1.1f),
++                )
++            }
++            Mood.SHINE -> {
++                drawPath(StarPath, white)
++                drawPath(StarPath, white, style = Stroke(width = 1.4f, join = StrokeJoin.Round))
++            }
++            Mood.SUN -> {
++                drawCircle(white, radius = 4.4f, center = Offset(12f, 12f))
++                for (i in 0 until 8) {
++                    val angle = i * PI / 4.0
++                    val c = cos(angle).toFloat()
++                    val s = sin(angle).toFloat()
++                    drawLine(
++                        white,
++                        start = Offset(12f + 7.3f * c, 12f + 7.3f * s),
++                        end = Offset(12f + 9.9f * c, 12f + 9.9f * s),
++                        strokeWidth = 2f,
++                        cap = StrokeCap.Round,
++                    )
++                }
++            }
++            Mood.HAPPY -> {
++                drawCircle(white, radius = 9f, center = Offset(12f, 12f), style = line)
++                drawCircle(white, radius = 1.3f, center = Offset(8.8f, 10f))
++                drawCircle(white, radius = 1.3f, center = Offset(15.2f, 10f))
++                drawPath(
++                    glyph("M7.8 14 C9 17.2 15 17.2 16.2 14"),
++                    white,
++                    style = Stroke(width = 2f, cap = StrokeCap.Round),
++                )
++            }
++            Mood.SPIRIT -> drawPath(
++                glyph(
++                    "M12 2 C12.8 8 16 11.2 22 12 C16 12.8 12.8 16 12 22 " +
++                        "C11.2 16 8 12.8 2 12 C8 11.2 11.2 8 12 2 Z",
++                ),
++                white,
++            )
++            Mood.MUSIC -> {
++                rotate(-18f, pivot = Offset(9f, 17.8f)) {
++                    drawOval(white, topLeft = Offset(5.4f, 15.1f), size = Size(7.2f, 5.4f))
++                }
++                drawRect(white, topLeft = Offset(11.6f, 3.5f), size = Size(2f, 14.3f))
++                drawPath(glyph("M13.4 3.5 C16.8 4.4 18.8 6.6 18.4 10.6 C17.2 8.8 15.4 8 13.4 8 Z"), white)
++            }
++        }
++    }
++}
++
++/** The rounded tile the picture sits on, in the mood's colour. */
++@Composable
++private fun MoodTile(mood: Mood) {
++    val shape = RoundedCornerShape(14.dp)
++    Box(
++        Modifier
++            .size(52.dp)
++            .clip(shape)
++            .background(Brush.verticalGradient(listOf(mood.top, mood.bottom)))
++            .border(1.dp, Color.White.copy(alpha = 0.22f), shape),
++        contentAlignment = Alignment.Center,
++    ) {
++        Canvas(Modifier.size(28.dp)) { drawMood(mood) }
++    }
++}
++
++/**
 + * The lyrics as notifications, the way a phone stacks them.
 + *
-+ * Each part of the song arrives as a glass notification from this app: its
-+ * icon, its name and "now" along the top and the lyric as the subject. The
-+ * next one drops in over it with a little spring, and the one before slips
++ * Each part of the song arrives as a glass notification: the lyric in bold,
++ * "now" at the corner, and on the left a coloured tile with a picture for
++ * what the line is about: a heart for love, a map pin for a place, a
++ * lightning bolt for energy, a flame, a moon, a clock, and so on. The next
++ * one drops in over it with a little spring, and the one before slips
 + * back, leaving only its edge showing under the new one, like the pile of
 + * them on a lock screen.
 + *
@@ -1676,8 +2011,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +        (0..activeLine).filter { lyrics.lines[it].text.isNotBlank() }.asReversed()
 +    }
 +
-+    val icon = rememberAppIcon()
-+    val appName = stringResource(R.string.app_name)
 +    var open by remember(lyrics) { mutableStateOf(false) }
 +
 +    if (shown.isEmpty()) return
@@ -1686,8 +2019,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +        OpenedPile(
 +            lyrics = lyrics,
 +            shown = shown,
-+            icon = icon,
-+            appName = appName,
 +            showTranslation = showTranslation,
 +            onSeek = onSeek,
 +            onClose = { open = false },
@@ -1697,8 +2028,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +        ClosedPile(
 +            lyrics = lyrics,
 +            shown = shown,
-+            icon = icon,
-+            appName = appName,
 +            showTranslation = showTranslation,
 +            onOpen = { open = true },
 +            modifier = modifier,
@@ -1711,8 +2040,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +private fun ClosedPile(
 +    lyrics: Lyrics,
 +    shown: List<Int>,
-+    icon: ImageBitmap?,
-+    appName: String,
 +    showTranslation: Boolean,
 +    onOpen: () -> Unit,
 +    modifier: Modifier,
@@ -1724,7 +2051,7 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +    Box(
 +        modifier
 +            .fillMaxSize()
-+            .padding(start = 16.dp, end = 64.dp, top = 56.dp),
++            .padding(start = 16.dp, end = 64.dp, top = 72.dp),
 +        contentAlignment = Alignment.TopCenter,
 +    ) {
 +        Box(
@@ -1759,14 +2086,12 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +                    LaunchedEffect(Unit) { slip.animateTo(1f, tween(260)) }
 +                    val line = lyrics.lines[shown[1]]
 +                    NotificationCard(
-+                        icon = icon,
-+                        appName = appName,
 +                        time = "now",
 +                        text = line.text,
 +                        translation = line.translation.takeIf { showTranslation && !it.isNullOrBlank() },
 +                        modifier = Modifier
 +                            .matchParentSize()
-+                            .clip(RoundedCornerShape(26.dp))
++                            .clip(RoundedCornerShape(30.dp))
 +                            .graphicsLayer {
 +                                val p = slip.value
 +                                scaleX = 1f - 0.06f * p
@@ -1786,8 +2111,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +                }
 +                val line = lyrics.lines[newest]
 +                NotificationCard(
-+                    icon = icon,
-+                    appName = appName,
 +                    time = "now",
 +                    text = line.text,
 +                    translation = line.translation.takeIf { showTranslation && !it.isNullOrBlank() },
@@ -1811,8 +2134,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +private fun OpenedPile(
 +    lyrics: Lyrics,
 +    shown: List<Int>,
-+    icon: ImageBitmap?,
-+    appName: String,
 +    showTranslation: Boolean,
 +    onSeek: (Long) -> Unit,
 +    onClose: () -> Unit,
@@ -1855,8 +2176,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +        items(shown, key = { it }) { index ->
 +            val line: LyricLine = lyrics.lines[index]
 +            NotificationCard(
-+                icon = icon,
-+                appName = appName,
 +                time = if (index == newest) "now" else clock(line.startTimeMs ?: 0L),
 +                text = line.text,
 +                translation = line.translation.takeIf { showTranslation && !it.isNullOrBlank() },
@@ -1869,109 +2188,74 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Noti
 +    }
 +}
 +
-+/** One glass notification: the app's icon and name, when, and the lyric as its subject. */
++/**
++ * One glass notification: the picture for the line's mood on the left, the
++ * lyric in bold beside it and the time at the corner.
++ */
 +@Composable
 +private fun NotificationCard(
-+    icon: ImageBitmap?,
-+    appName: String,
 +    time: String,
 +    text: String,
 +    translation: String?,
 +    modifier: Modifier = Modifier,
 +) {
 +    val ink = GlassInk
++    val mood = remember(text) { moodOf(text) }
 +    Row(
 +        modifier
-+            .clip(RoundedCornerShape(26.dp))
++            .clip(RoundedCornerShape(30.dp))
 +            .glass(ink)
 +            .padding(horizontal = 14.dp, vertical = 12.dp),
-+        horizontalArrangement = Arrangement.spacedBy(12.dp),
++        horizontalArrangement = Arrangement.spacedBy(14.dp),
++        verticalAlignment = Alignment.CenterVertically,
 +    ) {
-+        AppIcon(icon, ink)
++        MoodTile(mood)
 +        Column(Modifier.weight(1f)) {
-+            Row(verticalAlignment = Alignment.CenterVertically) {
-+                Text(
-+                    appName,
-+                    style = MaterialTheme.typography.labelMedium,
-+                    fontWeight = FontWeight.SemiBold,
-+                    color = ink.copy(alpha = 0.7f),
-+                    maxLines = 1,
-+                    modifier = Modifier.weight(1f),
-+                )
-+                Text(
-+                    time,
-+                    style = MaterialTheme.typography.labelSmall,
-+                    color = ink.copy(alpha = 0.55f),
-+                    maxLines = 1,
-+                )
-+            }
 +            Text(
 +                text,
-+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp),
++                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp),
 +                fontWeight = FontWeight.SemiBold,
 +                color = ink,
-+                modifier = Modifier.padding(top = 2.dp),
 +            )
 +            if (translation != null) {
 +                Text(
 +                    translation,
 +                    style = MaterialTheme.typography.bodyMedium,
-+                    color = ink.copy(alpha = 0.7f),
++                    color = ink.copy(alpha = 0.65f),
 +                    modifier = Modifier.padding(top = 2.dp),
 +                )
 +            }
 +        }
-+    }
-+}
-+
-+@Composable
-+private fun AppIcon(icon: ImageBitmap?, ink: Color) {
-+    val shape = RoundedCornerShape(10.dp)
-+    if (icon != null) {
-+        Image(
-+            bitmap = icon,
-+            contentDescription = null,
-+            modifier = Modifier.size(38.dp).clip(shape),
++        Text(
++            time,
++            style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp),
++            color = ink.copy(alpha = 0.6f),
++            maxLines = 1,
++            modifier = Modifier.align(Alignment.Top).padding(top = 2.dp),
 +        )
-+    } else {
-+        Box(Modifier.size(38.dp).clip(shape).background(ink.copy(alpha = 0.2f)))
 +    }
 +}
 +
 +/**
 + * The look of a pane of glass over the player's backdrop: a film dark enough
 + * (or, in the light setting, light enough) for the words on it to be read
-+ * whatever is behind, a faint tint of the app's ink and a thin edge.
++ * whatever is behind, a faint tint of the app's ink and a thin edge that is
++ * brighter where the light would catch it.
 + */
 +@Composable
 +private fun Modifier.glass(
 +    ink: Color,
-+    shape: RoundedCornerShape = RoundedCornerShape(26.dp),
++    shape: RoundedCornerShape = RoundedCornerShape(30.dp),
 +): Modifier {
 +    val darkBackdrop = ink.luminance() > 0.5f
 +    val film = if (darkBackdrop) Color.Black.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.6f)
++    val edge = Brush.linearGradient(
++        listOf(ink.copy(alpha = 0.42f), ink.copy(alpha = 0.10f), ink.copy(alpha = 0.26f)),
++    )
 +    return this
 +        .background(film, shape)
 +        .background(ink.copy(alpha = 0.08f), shape)
-+        .border(1.dp, ink.copy(alpha = 0.2f), shape)
-+}
-+
-+/** This app's own icon, drawn once at a size that is sharp at a notification's. */
-+@Composable
-+private fun rememberAppIcon(): ImageBitmap? {
-+    val context = LocalContext.current
-+    return remember(context) {
-+        runCatching {
-+            val drawable = context.packageManager.getApplicationIcon(context.packageName)
-+            val side = 128
-+            val bitmap = android.graphics.Bitmap.createBitmap(
-+                side, side, android.graphics.Bitmap.Config.ARGB_8888,
-+            )
-+            drawable.setBounds(0, 0, side, side)
-+            drawable.draw(android.graphics.Canvas(bitmap))
-+            bitmap.asImageBitmap()
-+        }.getOrNull()
-+    }
++        .border(1.2.dp, edge, shape)
 +}
 +
 +/** A time in the song as m:ss. */
