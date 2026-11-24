@@ -1,7 +1,7 @@
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-23 13:19:09.764975935 +0000
-@@ -127,8 +127,13 @@
+--- Square-orig/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-24 06:51:09.235770002 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/data/PreferencesStore.kt	2026-11-24 06:51:16.681793479 +0530
+@@ -127,8 +127,12 @@
          prefs.edit().putString(KEY_PREFERRED_LYRICS, value).apply()
      }
  
@@ -10,16 +10,15 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/data/Preferenc
 +    /**
 +     * How the lyrics are drawn: animated word by word, as plain lines, or as a
 +     * chat that fills with message bubbles as the song is sung, or as a
-+     * constellation whose stars are lit by the words, which turns the phone
-+     * onto its side.
++     * constellation whose stars are lit by the words.
 +     */
 +    enum class LyricsStyle { ANIMATED, CLASSIC, MESSAGES, CONSTELLATION }
  
      private val _lyricsStyle = MutableStateFlow(
          LyricsStyle.entries.firstOrNull { it.name == prefs.getString(KEY_LYRICS_STYLE, null) } ?: LyricsStyle.ANIMATED,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-23 13:19:09.765187968 +0000
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-24 06:51:09.239751855 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/ClassicLyricsView.kt	2026-11-24 06:51:09.268254405 +0530
 @@ -151,7 +151,7 @@
  }
  
@@ -39,16 +38,15 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Clas
      ranges: List<IntRange?>,
      positionMs: Long,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt	2026-11-23 13:19:22.730365788 +0000
-@@ -0,0 +1,379 @@
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/ConstellationLyricsView.kt	2026-11-24 06:51:16.680924033 +0530
+@@ -0,0 +1,371 @@
 +package dev.lelonio.square.ui.player
 +
 +import androidx.compose.foundation.Canvas
 +import androidx.compose.foundation.layout.fillMaxSize
 +import androidx.compose.material3.MaterialTheme
 +import androidx.compose.runtime.Composable
-+import androidx.compose.runtime.DisposableEffect
 +import androidx.compose.runtime.State
 +import androidx.compose.runtime.remember
 +import androidx.compose.ui.Modifier
@@ -60,7 +58,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 +import androidx.compose.ui.graphics.drawscope.DrawScope
 +import androidx.compose.ui.graphics.drawscope.withTransform
 +import androidx.compose.ui.graphics.lerp
-+import androidx.compose.ui.platform.LocalContext
 +import androidx.compose.ui.text.TextLayoutResult
 +import androidx.compose.ui.text.TextMeasurer
 +import androidx.compose.ui.text.TextStyle
@@ -124,10 +121,10 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 + * Where the stars sit is chosen once for each line from the line itself, so a
 + * song is laid out the same way every time it is played.
 + *
-+ * It is made to be read wide, so showing it turns the phone onto its side,
-+ * and leaving it hands the choice back to the phone. Lyrics that are not
-+ * synced have no "now" for a sky to follow, so they are shown plainly, as in
-+ * the classic view, and the phone is left as it is.
++ * It reads best wide, but it never turns the phone: it draws into whatever
++ * space it is given, so the other lyric styles stay a tap away in any
++ * orientation. Lyrics that are not synced have no "now" for a sky to follow,
++ * so they are shown plainly, as in the classic view.
 + */
 +@Composable
 +fun ConstellationLyricsView(
@@ -156,14 +153,6 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 +    positionMs: State<Long>,
 +    modifier: Modifier,
 +) {
-+    // Onto its side while the sky is up, and back to the phone's own choice
-+    // when it is not.
-+    val context = LocalContext.current
-+    DisposableEffect(Unit) {
-+        lockVideoOrientation(context, true)
-+        onDispose { lockVideoOrientation(context, null) }
-+    }
-+
 +    val ink = GlassInk
 +    val measurer = rememberTextMeasurer()
 +    val clock = rememberFrameClock(positionMs, true)
@@ -362,7 +351,9 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 +        val radius = (if (isCurrent) 7.dp.toPx() else 4.dp.toPx()) * appear * breathe
 +        if (isCurrent) {
 +            val glow = 20.dp.toPx() * appear
-+            drawCircle(
++            // A gradient needs a radius above zero, and the pop starts from
++            // exactly zero on the first frame of every word.
++            if (glow > 0.5f) drawCircle(
 +                brush = Brush.radialGradient(
 +                    listOf(StarOrange.copy(alpha = 0.55f * alpha), Color.Transparent),
 +                    center = centre,
@@ -422,8 +413,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Cons
 +    }
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-23 13:19:09.767554276 +0000
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-24 06:51:09.239948952 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/LyricsOptions.kt	2026-11-24 06:51:09.269142541 +0530
 @@ -232,8 +232,8 @@
                      }
                  }
@@ -445,8 +436,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Lyri
                              ),
                              style = MaterialTheme.typography.bodyMedium,
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-23 13:19:22.726961954 +0000
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	1970-01-01 05:30:00.000000000 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/MessagesLyricsView.kt	2026-11-24 06:51:09.269705249 +0530
 @@ -0,0 +1,686 @@
 +package dev.lelonio.square.ui.player
 +
@@ -1135,8 +1126,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Mess
 +    }
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt	1970-01-01 00:00:00.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt	2026-11-23 13:19:09.768135756 +0000
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt	1970-01-01 05:30:00.000000000 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlaceHints.kt	2026-11-24 06:51:09.269980072 +0530
 @@ -0,0 +1,172 @@
 +package dev.lelonio.square.ui.player
 +
@@ -1311,8 +1302,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Plac
 +    return null
 +}
 diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt
---- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-23 13:19:09.768705859 +0000
+--- Square-orig/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-24 06:51:09.240043132 +0530
++++ Square-master/app/src/main/java/dev/lelonio/square/ui/player/PlayerScreen.kt	2026-11-24 06:51:09.270323536 +0530
 @@ -3017,6 +3017,30 @@
                  color = GlassInkDim,
              )
@@ -1345,8 +1336,8 @@ diff -ruN orig/Square-master/app/src/main/java/dev/lelonio/square/ui/player/Play
                  LocalLayoutDirection provides songDirection,
              ) {
 diff -ruN orig/Square-master/app/src/main/res/values/strings.xml Square-master/app/src/main/res/values/strings.xml
---- Square-orig/app/src/main/res/values/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values/strings.xml	2026-11-23 13:19:09.769295153 +0000
+--- Square-orig/app/src/main/res/values/strings.xml	2026-11-24 06:51:09.242185387 +0530
++++ Square-master/app/src/main/res/values/strings.xml	2026-11-24 06:51:09.271231354 +0530
 @@ -657,6 +657,8 @@
      <string name="lyrics_style_title">Style</string>
      <string name="lyrics_style_animated">Animated</string>
@@ -1357,8 +1348,8 @@ diff -ruN orig/Square-master/app/src/main/res/values/strings.xml Square-master/a
      <string name="lyrics_line">By line</string>
      <string name="lyrics_unsynced">Not synced</string>
 diff -ruN orig/Square-master/app/src/main/res/values-de/strings.xml Square-master/app/src/main/res/values-de/strings.xml
---- Square-orig/app/src/main/res/values-de/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-de/strings.xml	2026-11-23 13:19:09.769567424 +0000
+--- Square-orig/app/src/main/res/values-de/strings.xml	2026-11-24 06:51:09.241691229 +0530
++++ Square-master/app/src/main/res/values-de/strings.xml	2026-11-24 06:51:09.272134208 +0530
 @@ -591,6 +591,8 @@
      <string name="lyrics_style_title">Stil</string>
      <string name="lyrics_style_animated">Animiert</string>
@@ -1369,8 +1360,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-de/strings.xml Square-maste
      <string name="lyrics_line">Zeilenweise</string>
      <string name="lyrics_unsynced">Nicht synchron</string>
 diff -ruN orig/Square-master/app/src/main/res/values-es/strings.xml Square-master/app/src/main/res/values-es/strings.xml
---- Square-orig/app/src/main/res/values-es/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-es/strings.xml	2026-11-23 13:19:09.769800555 +0000
+--- Square-orig/app/src/main/res/values-es/strings.xml	2026-11-24 06:51:09.241729074 +0530
++++ Square-master/app/src/main/res/values-es/strings.xml	2026-11-24 06:51:09.272712331 +0530
 @@ -597,6 +597,8 @@
      <string name="lyrics_style_title">Estilo</string>
      <string name="lyrics_style_animated">Animado</string>
@@ -1381,8 +1372,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-es/strings.xml Square-maste
      <string name="lyrics_line">Por línea</string>
      <string name="lyrics_unsynced">Sin sincronizar</string>
 diff -ruN orig/Square-master/app/src/main/res/values-fr/strings.xml Square-master/app/src/main/res/values-fr/strings.xml
---- Square-orig/app/src/main/res/values-fr/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-fr/strings.xml	2026-11-23 13:19:09.769999279 +0000
+--- Square-orig/app/src/main/res/values-fr/strings.xml	2026-11-24 06:51:09.241779043 +0530
++++ Square-master/app/src/main/res/values-fr/strings.xml	2026-11-24 06:51:09.273355295 +0530
 @@ -591,6 +591,8 @@
      <string name="lyrics_style_title">Style</string>
      <string name="lyrics_style_animated">Animé</string>
@@ -1393,8 +1384,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-fr/strings.xml Square-maste
      <string name="lyrics_line">Par ligne</string>
      <string name="lyrics_unsynced">Non synchronisées</string>
 diff -ruN orig/Square-master/app/src/main/res/values-hi/strings.xml Square-master/app/src/main/res/values-hi/strings.xml
---- Square-orig/app/src/main/res/values-hi/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-hi/strings.xml	2026-11-23 13:19:09.770291021 +0000
+--- Square-orig/app/src/main/res/values-hi/strings.xml	2026-11-24 06:51:09.241826069 +0530
++++ Square-master/app/src/main/res/values-hi/strings.xml	2026-11-24 06:51:09.273973491 +0530
 @@ -606,6 +606,8 @@
      <string name="lyrics_style_title">शैली</string>
      <string name="lyrics_style_animated">एनिमेटेड</string>
@@ -1405,8 +1396,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-hi/strings.xml Square-maste
      <string name="lyrics_line">पंक्ति-दर-पंक्ति</string>
      <string name="lyrics_unsynced">सिंक नहीं</string>
 diff -ruN orig/Square-master/app/src/main/res/values-it/strings.xml Square-master/app/src/main/res/values-it/strings.xml
---- Square-orig/app/src/main/res/values-it/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-it/strings.xml	2026-11-23 13:19:09.770543153 +0000
+--- Square-orig/app/src/main/res/values-it/strings.xml	2026-11-24 06:51:09.241874537 +0530
++++ Square-master/app/src/main/res/values-it/strings.xml	2026-11-24 06:51:09.274781171 +0530
 @@ -630,6 +630,8 @@
      <string name="lyrics_style_title">Stile</string>
      <string name="lyrics_style_animated">Animato</string>
@@ -1417,8 +1408,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-it/strings.xml Square-maste
      <string name="lyrics_line">Per riga</string>
      <string name="lyrics_unsynced">Non sincronizzato</string>
 diff -ruN orig/Square-master/app/src/main/res/values-ja/strings.xml Square-master/app/src/main/res/values-ja/strings.xml
---- Square-orig/app/src/main/res/values-ja/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-ja/strings.xml	2026-11-23 13:19:09.770801073 +0000
+--- Square-orig/app/src/main/res/values-ja/strings.xml	2026-11-24 06:51:09.241917074 +0530
++++ Square-master/app/src/main/res/values-ja/strings.xml	2026-11-24 06:51:09.275593494 +0530
 @@ -647,6 +647,8 @@
      <string name="lyrics_style_title">表示スタイル</string>
      <string name="lyrics_style_animated">アニメーション</string>
@@ -1429,8 +1420,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-ja/strings.xml Square-maste
      <string name="lyrics_line">行単位で同期</string>
      <string name="lyrics_unsynced">未同期</string>
 diff -ruN orig/Square-master/app/src/main/res/values-ko/strings.xml Square-master/app/src/main/res/values-ko/strings.xml
---- Square-orig/app/src/main/res/values-ko/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-ko/strings.xml	2026-11-23 13:19:09.771058489 +0000
+--- Square-orig/app/src/main/res/values-ko/strings.xml	2026-11-24 06:51:09.241961172 +0530
++++ Square-master/app/src/main/res/values-ko/strings.xml	2026-11-24 06:51:09.276207521 +0530
 @@ -615,6 +615,8 @@
      <string name="lyrics_style_title">스타일</string>
      <string name="lyrics_style_animated">애니메이션</string>
@@ -1441,8 +1432,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-ko/strings.xml Square-maste
      <string name="lyrics_line">줄별</string>
      <string name="lyrics_unsynced">동기화되지 않음</string>
 diff -ruN orig/Square-master/app/src/main/res/values-pt/strings.xml Square-master/app/src/main/res/values-pt/strings.xml
---- Square-orig/app/src/main/res/values-pt/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-pt/strings.xml	2026-11-23 13:19:09.771281373 +0000
+--- Square-orig/app/src/main/res/values-pt/strings.xml	2026-11-24 06:51:09.242001596 +0530
++++ Square-master/app/src/main/res/values-pt/strings.xml	2026-11-24 06:51:09.276835446 +0530
 @@ -591,6 +591,8 @@
      <string name="lyrics_style_title">Estilo</string>
      <string name="lyrics_style_animated">Animado</string>
@@ -1453,8 +1444,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-pt/strings.xml Square-maste
      <string name="lyrics_line">Por linha</string>
      <string name="lyrics_unsynced">Não sincronizada</string>
 diff -ruN orig/Square-master/app/src/main/res/values-ru/strings.xml Square-master/app/src/main/res/values-ru/strings.xml
---- Square-orig/app/src/main/res/values-ru/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-ru/strings.xml	2026-11-23 13:19:09.771492848 +0000
+--- Square-orig/app/src/main/res/values-ru/strings.xml	2026-11-24 06:51:09.242042412 +0530
++++ Square-master/app/src/main/res/values-ru/strings.xml	2026-11-24 06:51:09.277400552 +0530
 @@ -620,6 +620,8 @@
      <string name="lyrics_style_title">Стиль</string>
      <string name="lyrics_style_animated">Анимированный</string>
@@ -1465,8 +1456,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-ru/strings.xml Square-maste
      <string name="lyrics_line">По строкам</string>
      <string name="lyrics_unsynced">Без синхронизации</string>
 diff -ruN orig/Square-master/app/src/main/res/values-tr/strings.xml Square-master/app/src/main/res/values-tr/strings.xml
---- Square-orig/app/src/main/res/values-tr/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-tr/strings.xml	2026-11-23 13:19:09.771693748 +0000
+--- Square-orig/app/src/main/res/values-tr/strings.xml	2026-11-24 06:51:09.242083802 +0530
++++ Square-master/app/src/main/res/values-tr/strings.xml	2026-11-24 06:51:09.278087576 +0530
 @@ -604,6 +604,8 @@
      <string name="lyrics_style_title">Stil</string>
      <string name="lyrics_style_animated">Animasyonlu</string>
@@ -1477,8 +1468,8 @@ diff -ruN orig/Square-master/app/src/main/res/values-tr/strings.xml Square-maste
      <string name="lyrics_line">Satır satır</string>
      <string name="lyrics_unsynced">Senkronize değil</string>
 diff -ruN orig/Square-master/app/src/main/res/values-vi/strings.xml Square-master/app/src/main/res/values-vi/strings.xml
---- Square-orig/app/src/main/res/values-vi/strings.xml	2026-11-16 11:01:21.000000000 +0000
-+++ Square-master/app/src/main/res/values-vi/strings.xml	2026-11-23 13:19:09.771845026 +0000
+--- Square-orig/app/src/main/res/values-vi/strings.xml	2026-11-24 06:51:09.242125718 +0530
++++ Square-master/app/src/main/res/values-vi/strings.xml	2026-11-24 06:51:09.278851952 +0530
 @@ -650,6 +650,8 @@
      <string name="lyrics_style_title">Kiểu</string>
      <string name="lyrics_style_animated">Động</string>
